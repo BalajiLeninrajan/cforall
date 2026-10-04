@@ -86,6 +86,7 @@
 #include "Validate/VerifyCtorDtorAssign.hpp" // for verifyCtorDtorAssign
 #include "Virtual/ExpandCasts.hpp"          // for expandCasts
 #include "Virtual/VirtualDtor.hpp"          // for implementVirtDtors
+#include "LSP/Lsp.hpp"                        // for LSP::snapshot, LSP::write
 
 using namespace std;
 
@@ -111,6 +112,20 @@ static void NewPass( const char * const name ) {
 		ast::checkInvariants(unit);         \
 	}
 
+// A pass that only checks the program. In LSP mode its errors are recorded and translation continues, so the dump
+// still has resolved data.
+#define CHECK_PASS( name, pass, unit )      \
+	if ( LSP::enabled ) {                   \
+		try {                               \
+			PASS( name, pass, unit );       \
+		} catch ( SemanticErrorException & e ) { \
+			Stats::Time::StopBlock();       \
+			LSP::addErrors( e );            \
+		}                                   \
+	} else {                                \
+		PASS( name, pass, unit );           \
+	}
+
 #define DUMP( cond, unit )                  \
 	if ( cond ) {                           \
 		dump( std::move( unit ) );          \
@@ -126,6 +141,26 @@ static void dump( ast::TranslationUnit && transUnit, ostream & out = cout );
 
 static void backtrace( int start );
 static void initSignals();
+
+// True once the LSP snapshot holds a cleanly resolved unit. Errors in later passes then leave the dump complete.
+static bool lspResolved = false;
+
+// Ends an LSP-mode run by writing the dump. Exit status 0 means the dump was written. Called from main's
+// exception handlers, so it must not throw.
+static int lspFinish( bool complete ) {
+	bool written = false;
+	try {
+		Stats::Time::StartBlock( "LSP Write" );
+		written = LSP::write( complete );
+		Stats::Time::StopBlock();
+		Stats::print();
+	} catch ( const exception & e ) {
+		cerr << "*cfa-cpp compilation error* cannot write the LSP dump: " << e.what() << endl;
+	} catch ( ... ) {
+		cerr << "*cfa-cpp compilation error* cannot write the LSP dump" << endl;
+	} // try
+	return written ? EXIT_SUCCESS : EXIT_FAILURE;
+}
 
 int main( int argc, char * argv[] ) {
 	FILE * input;										// use FILE rather than istream because yyin is FILE
@@ -153,6 +188,7 @@ int main( int argc, char * argv[] ) {
 		if ( optind < argc ) {							// any commands after the flags ? => input file name
 			input = fopen( argv[ optind ], "r" );
 			assertf( input, "cannot open %s because %s\n", argv[ optind ], strerror( errno ) );
+			LSP::options.input = argv[ optind ];
 			optind += 1;
 		} else {										// no input file name
 			input = stdin;
@@ -202,10 +238,10 @@ int main( int argc, char * argv[] ) {
 
 		PASS( "Translate Exception Declarations", ControlStruct::translateExcept, transUnit );
 		DUMP( excpdeclp, transUnit );
-		PASS( "Verify Ctor, Dtor & Assign", Validate::verifyCtorDtorAssign, transUnit );
+		CHECK_PASS( "Verify Ctor, Dtor & Assign", Validate::verifyCtorDtorAssign, transUnit );
 		PASS( "Replace Typedefs", Validate::replaceTypedef, transUnit );
 		PASS( "Fix Return Types", Validate::fixReturnTypes, transUnit );
-		PASS( "Check Assertions", Validate::checkAssertions, transUnit );
+		CHECK_PASS( "Check Assertions", Validate::checkAssertions, transUnit );
 		PASS( "Enum and Pointer Decay", Validate::decayEnumsAndPointers, transUnit );
 
 		PASS( "Link Instance Types", Validate::linkInstanceTypes, transUnit );
@@ -218,7 +254,7 @@ int main( int argc, char * argv[] ) {
 		PASS( "Translate Enum Range Expression", ControlStruct::translateEnumRange, transUnit );
 		PASS( "Translate Dimensions", Validate::translateDimensionParameters, transUnit );
 		PASS( "Generate Enum Attributes Functions", Validate::implementEnumFunc, transUnit );
-		PASS( "Check Function Returns", Validate::checkReturnStatements, transUnit );
+		CHECK_PASS( "Check Function Returns", Validate::checkReturnStatements, transUnit );
 		PASS( "Fix Return Statements", InitTweak::fixReturnStatements, transUnit );
 		PASS( "Implement Concurrent Keywords", Concurrency::implementKeywords, transUnit );
 		PASS( "Fix Unique Ids", Validate::fixUniqueIds, transUnit );
@@ -271,7 +307,31 @@ int main( int argc, char * argv[] ) {
 			return EXIT_SUCCESS;
 		} // if
 
-		PASS( "Resolve", ResolvExpr::resolve, transUnit );
+		if ( LSP::enabled ) {
+			// Statements that fail to resolve are recorded and left unresolved, so the rest of the unit can still be
+			// dumped. Declarations that fail are left unresolved by the pass itself, which throws at the end.
+			SemanticErrorException resolveErrors;
+			SemanticErrorSink = &resolveErrors;
+			try {
+				PASS( "Resolve", ResolvExpr::resolve, transUnit );
+			} catch ( SemanticErrorException & e ) {
+				Stats::Time::StopBlock();
+				resolveErrors.append( e );
+			} // try
+			SemanticErrorSink = nullptr;
+			LSP::addErrors( resolveErrors );
+			NewPass( "LSP Snapshot" );
+			Stats::Time::StartBlock( "LSP Snapshot" );
+			LSP::snapshot( transUnit );
+			Stats::Time::StopBlock();
+			if ( ! resolveErrors.isEmpty() ) {
+				// The unresolved parts would trip the later passes.
+				return lspFinish( false );
+			} // if
+			lspResolved = true;
+		} else {
+			PASS( "Resolve", ResolvExpr::resolve, transUnit );
+		} // if
 		DUMP( expranlp, transUnit );
 		PASS( "Fix Init", InitTweak::fix, transUnit, buildingLibrary() );
 		PASS( "Erase With", ResolvExpr::eraseWith, transUnit );
@@ -311,7 +371,12 @@ int main( int argc, char * argv[] ) {
 
 		DUMP( bcodegenp, transUnit );
 
-		if ( optind < argc ) {							// any commands after the flags and input file ? => output file name
+		if ( LSP::enabled ) {
+			if ( LSP::options.cOut.empty() ) {			// no code generation, which cannot report user errors
+				return lspFinish( true );
+			} // if
+			output = new ofstream( LSP::options.cOut );
+		} else if ( optind < argc ) {					// any commands after the flags and input file ? => output file name
 			output = new ofstream( argv[ optind ] );
 		} // if
 
@@ -321,7 +386,16 @@ int main( int argc, char * argv[] ) {
 		if ( output != &cout ) {
 			delete output;
 		} // if
+		if ( LSP::enabled ) {
+			return lspFinish( true );
+		} // if
 	} catch ( SemanticErrorException & e ) {
+		if ( LSP::enabled ) {
+			if ( output != &cout ) delete output;
+			LSP::addErrors( e );
+			LSP::snapshot( transUnit );
+			return lspFinish( lspResolved );
+		} // if
 		if ( errorp ) {
 			cerr << "---AST at error:---" << endl;
 			dump( std::move( transUnit ), cerr );
@@ -345,8 +419,13 @@ int main( int argc, char * argv[] ) {
 				cerr << "*cfa-cpp compilation error* exception uncaught and unknown" << endl;
 			} // if
 		} catch( const exception & e ) {
+			if ( LSP::enabled ) LSP::addInternalError( string( "uncaught exception: " ) + e.what() );
 			cerr << "*cfa-cpp compilation error* uncaught exception \"" << e.what() << "\"\n";
 		} // try
+		if ( LSP::enabled ) {
+			if ( ! LSP::hasErrors() ) LSP::addInternalError( "translator failed with an unknown exception" );
+			return lspFinish( lspResolved );
+		} // if
 		return EXIT_FAILURE;
 	} // try
 
@@ -364,7 +443,7 @@ int main( int argc, char * argv[] ) {
 
 static const char optstring[] = ":c:ghilLmNnpdP:S:twW:D:";
 
-enum { PreludeDir = 128 };
+enum { PreludeDir = 128, LspOut, LspFocus, LspCOut };
 static struct option long_opts[] = {
 	{ "colors", required_argument, nullptr, 'c' },
 	{ "gdb", no_argument, nullptr, 'g' },
@@ -379,6 +458,9 @@ static struct option long_opts[] = {
 	{ "deterministic-out", no_argument, nullptr, 'd' },
 	{ "print", required_argument, nullptr, 'P' },
 	{ "prelude-dir", required_argument, nullptr, PreludeDir },
+	{ "lsp", required_argument, nullptr, LspOut },
+	{ "lsp-focus", required_argument, nullptr, LspFocus },
+	{ "lsp-c-out", required_argument, nullptr, LspCOut },
 	{ "statistics", required_argument, nullptr, 'S' },
 	{ "tree", no_argument, nullptr, 't' },
 	{ "", no_argument, nullptr, 0 },					// -w
@@ -401,6 +483,9 @@ static const char * description[] = {
 	"only print deterministic output",                  // -d
 	"print",											// -P
 	"<directory> prelude directory for debug/nodebug",	// no flag
+	"<file> LSP mode: write declarations, references and diagnostics as JSON to file", // no flag
+	"<file> LSP mode: a file being edited (repeatable)", // no flag
+	"<file> LSP mode: also generate C into file",	// no flag
 	"<option-list> enable profiling information: counters, heap, time, all, none", // -S
 	"building cfa standard lib",						// -t
 	"",													// -w
@@ -445,7 +530,7 @@ static void usage( char * argv[] ) {
 	int i = 0, j = 1;									// j skips starting colon
 	for ( ; long_opts[i].name != 0 && optstring[j] != '\0'; i += 1, j += 1 ) {
 		if ( long_opts[i].name[0] != '\0' ) {			// hidden option, internal usage only
-			if ( strcmp( long_opts[i].name, "prelude-dir" ) != 0 ) { // flag
+			if ( long_opts[i].val < PreludeDir ) {			// flag
 				cout << "  -" << optstring[j] << ",";
 			} else {									// no flag
 				j -= 1;									// compensate
@@ -524,6 +609,16 @@ static void parse_cmdline( int argc, char * argv[] ) {
 			break;
 		  case PreludeDir:								// prelude directory for debug/nodebug, hidden
 			PreludeDirector = optarg;
+			break;
+		  case LspOut:
+			LSP::enabled = true;
+			LSP::options.jsonOut = optarg;
+			break;
+		  case LspFocus:
+			LSP::options.focus.push_back( optarg );
+			break;
+		  case LspCOut:
+			LSP::options.cOut = optarg;
 			break;
 		  case 'S':										// enable profiling information, argument comma separated list of names
 			Stats::parse_params( optarg );

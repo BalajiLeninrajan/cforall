@@ -51,6 +51,7 @@ include SymTab/module.mk
 include Tuples/module.mk
 include Validate/module.mk
 include Virtual/module.mk
+include LSP/module.mk
 
 $(addprefix $(srcdir)/, ResolvExpr/ConversionCost.cpp ResolvExpr/CommonType.cpp SymTab/ManglerCommon.cpp) : $(srcdir)/AST/BasicKind.hpp
 
@@ -67,7 +68,7 @@ ___driver_cfa_cpp_SOURCES = $(SRC)
 ___driver_cfa_cpp_LDADD = -ldl $(LIBPROFILER) $(LIBTCMALLOC)
 EXTRA_DIST = include/cassert include/optional BasicTypes-gen.cpp
 
-AM_CXXFLAGS = @HOST_FLAGS@ -Wno-deprecated -Wall -Wextra -Werror=return-type -DDEBUG_ALL -I./Parser -I$(srcdir)/Parser -I$(srcdir)/include -DYY_NO_INPUT -O3 -g -std=c++17 $(TCMALLOCFLAG)
+AM_CXXFLAGS = @HOST_FLAGS@ -Wno-deprecated -Wall -Wextra -Werror=return-type -DDEBUG_ALL -I./Parser -I$(srcdir)/Parser -I$(srcdir)/include -I$(top_srcdir)/../third_party -DYY_NO_INPUT -O3 -g -std=c++17 $(TCMALLOCFLAG)
 AM_LDFLAGS  = @HOST_FLAGS@ -Xlinker -export-dynamic
 ARFLAGS     = cr
 

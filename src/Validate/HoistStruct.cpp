@@ -21,6 +21,7 @@
 #include "AST/Pass.hpp"
 #include "AST/TranslationUnit.hpp"
 #include "AST/Vector.hpp"
+#include "LSP/Lsp.hpp"
 
 namespace Validate {
 
@@ -145,6 +146,7 @@ AggrDecl const * HoistStructCore::postAggregate( AggrDecl const * decl ) {
 	// Is this a nested type? Then update the name, after the parent's name
 	// has been updated (hence the post visit).
 	if ( mut->parent ) {
+		if ( LSP::enabled ) LSP::recordRename( qualifiedName( mut ), mut->name );
 		mut->name = qualifiedName( mut );
 	// Top level type that has hoisted? Then do a second pass subpass to make
 	// sure we update instance type names after the declaration is renamed.

@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "Common/Utility.hpp"							// for to_string, CodeLocation (ptr only)
+#include "LSP/Lsp.hpp"                                 // for LSP::addDiagnostic
 
 using namespace std;
 
@@ -74,6 +75,7 @@ void SemanticWarning_Set(const char * const name, Severity s) {
 // Semantic Error
 
 bool SemanticErrorThrow = false;
+SemanticErrorException * SemanticErrorSink = nullptr;
 
 SemanticErrorException::SemanticErrorException( CodeLocation location, string error ) {
 	append( location, error );
@@ -135,6 +137,10 @@ void SemanticWarning( CodeLocation location, Warning warning, ... ) {
 			va_end( args );
 
 			if ( severity == Severity::Warn ) {
+				if ( LSP::enabled ) {
+					LSP::addDiagnostic( location, "warning", msg );
+					break;
+				} // if
 				cerr << ErrorHelpers::bold() << location << ErrorHelpers::warning_str() << ErrorHelpers::reset_font() << msg << endl;
 			} else {
 				SemanticError( location, string( msg ) );

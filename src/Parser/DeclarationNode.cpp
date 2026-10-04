@@ -40,6 +40,7 @@
 #include "Parser/StatementNode.hpp"    // for StatementNode
 #include "TypeData.hpp"                // for TypeData, TypeData::Aggregate_t
 #include "TypedefTable.hpp"            // for TypedefTable
+#include "LSP/Lsp.hpp"                    // for LSP::recordTypeParam
 
 extern TypedefTable typedefTable;
 
@@ -96,6 +97,8 @@ DeclarationNode * DeclarationNode::clone() const {
 	newnode->extension = extension;
 	newnode->asmStmt = maybeCopy( asmStmt );
 	newnode->error = error;
+	newnode->nameLoc = nameLoc;
+	newnode->extent = extent;
 
 	newnode->variable.tyClass = variable.tyClass;
 	newnode->variable.assertions = maybeCopy( variable.assertions );
@@ -892,6 +895,19 @@ void buildTypeList( const DeclarationNode * firstNode,
 } // buildTypeList
 
 ast::Decl * DeclarationNode::build() const {
+	ast::Decl * decl = buildNode();
+	if ( decl ) {
+		if ( nameLoc.isSet() ) decl->location = nameLoc;
+		if ( extent.isSet() ) decl->extent = extent;
+		// The kind as written: otype parameters become sized dtypes with assertions, which can be lost later.
+		if ( LSP::enabled && variable.tyClass != ast::TypeDecl::NUMBER_OF_KINDS && dynamic_cast<ast::TypeDecl *>( decl ) ) {
+			LSP::recordTypeParam( decl->location, variable.tyClass );
+		} // if
+	} // if
+	return decl;
+} // DeclarationNode::build
+
+ast::Decl * DeclarationNode::buildNode() const {
 	if ( ! error.empty() ) SemanticError( this, error + " in declaration of " );
 
 	if ( asmStmt ) {

@@ -19,6 +19,7 @@
 #include "Common/CodeLocationTools.hpp"     // for forceFillCodeLocations
 #include "Parser/DeclarationNode.hpp"       // for DeclarationNode, buildList
 #include "Parser/TypedefTable.hpp"          // for TypedefTable
+#include "LSP/Lsp.hpp"                    // for LSP::enabled
 
 // Variables global to the parsing code.
 ast::Linkage::Spec linkage = ast::Linkage::Cforall;
@@ -38,6 +39,8 @@ void parse( FILE * input, ast::Linkage::Spec linkage, bool alwaysExit ) {
 	int parseStatus = yyparse();
 	fclose( input );
 	if ( alwaysExit || parseStatus != 0 ) {
+		// In LSP mode the syntax errors are already recorded; unwind so the dump is written.
+		if ( LSP::enabled && ! alwaysExit ) throw SemanticErrorException();
 		exit( parseStatus );
 	} // if
 } // parse

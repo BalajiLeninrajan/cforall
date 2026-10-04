@@ -259,6 +259,8 @@ public:
 	std::vector<ptr<Expr>> params;
 	std::string name;
 	bool hoistType = false;
+	// The type name in the source, for the LSP dump. Unset if unknown or generated.
+	CodeLocation location;
 
 	BaseInstType(
 		const std::string& n, CV::Qualifiers q = {}, std::vector<ptr<Attribute>> && as = {} )

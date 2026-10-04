@@ -44,6 +44,8 @@ public:
 	Linkage::Spec linkage;
 	UniqueId uniqueId = 0;
 	bool extension = false;
+	// The whole declaration in the source (location is the name), for the LSP dump. Unset if unknown.
+	CodeLocation extent;
 
 	Decl( const CodeLocation& loc, const std::string& name, Storage::Classes storage,
 		Linkage::Spec linkage )
@@ -246,6 +248,8 @@ public:
 	std::vector<ptr<Attribute>> attributes;
 	bool body = false;
 	readonly<AggregateDecl> parent = {};
+	// The braces of the body, for the LSP dump. Unset if unknown.
+	CodeLocation bodyLocation;
 
 	AggregateDecl( const CodeLocation& loc, const std::string& name,
 		std::vector<ptr<Attribute>>&& attrs = {}, Linkage::Spec linkage = Linkage::Cforall )

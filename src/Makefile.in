@@ -202,10 +202,12 @@ am__objects_8 = Tuples/Explode.$(OBJEXT) \
 	Tuples/TupleAssignment.$(OBJEXT) \
 	Tuples/TupleExpansion.$(OBJEXT) Tuples/Tuples.$(OBJEXT)
 am__objects_9 =
+am__objects_12 = LSP/Lsp.$(OBJEXT)
 am__objects_10 = CompilationState.$(OBJEXT) $(am__objects_1) \
 	$(am__objects_2) $(am__objects_3) $(am__objects_4) \
 	$(am__objects_5) $(am__objects_6) $(am__objects_7) \
-	SymTab/Demangle.$(OBJEXT) $(am__objects_8) $(am__objects_9)
+	SymTab/Demangle.$(OBJEXT) $(am__objects_8) $(am__objects_9) \
+	$(am__objects_12)
 am_libdemangle_a_OBJECTS = $(am__objects_10)
 libdemangle_a_OBJECTS = $(am_libdemangle_a_OBJECTS)
 am__objects_11 = main.$(OBJEXT) CompilationState.$(OBJEXT) \
@@ -255,7 +257,7 @@ am__objects_11 = main.$(OBJEXT) CompilationState.$(OBJEXT) \
 	Validate/ReturnCheck.$(OBJEXT) \
 	Validate/VerifyCtorDtorAssign.$(OBJEXT) \
 	Virtual/ExpandCasts.$(OBJEXT) Virtual/Tables.$(OBJEXT) \
-	Virtual/VirtualDtor.$(OBJEXT)
+	Virtual/VirtualDtor.$(OBJEXT) $(am__objects_12)
 am____driver_cfa_cpp_OBJECTS = $(am__objects_11)
 ___driver_cfa_cpp_OBJECTS = $(am____driver_cfa_cpp_OBJECTS)
 am__DEPENDENCIES_1 =
@@ -284,6 +286,7 @@ DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/automake/depcomp
 am__maybe_remake_depfiles = depfiles
 am__depfiles_remade = ./$(DEPDIR)/CompilationState.Po \
+	LSP/$(DEPDIR)/Lsp.Po \
 	./$(DEPDIR)/MakeLibCfa.Po ./$(DEPDIR)/main.Po \
 	AST/$(DEPDIR)/Attribute.Po AST/$(DEPDIR)/Copy.Po \
 	AST/$(DEPDIR)/Create.Po AST/$(DEPDIR)/Decl.Po \
@@ -472,6 +475,7 @@ am__DIST_COMMON = $(srcdir)/AST/module.mk $(srcdir)/CodeGen/module.mk \
 	$(srcdir)/Parser/module.mk $(srcdir)/ResolvExpr/module.mk \
 	$(srcdir)/SymTab/module.mk $(srcdir)/Tuples/module.mk \
 	$(srcdir)/Validate/module.mk $(srcdir)/Virtual/module.mk \
+	$(srcdir)/LSP/module.mk \
 	$(top_srcdir)/automake/depcomp $(top_srcdir)/automake/ylwrap \
 	Parser/lex.cc Parser/parser.cc Parser/parser.hh
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
@@ -697,11 +701,12 @@ SRC = main.cpp CompilationState.cpp CompilationState.hpp \
 	Validate/VerifyCtorDtorAssign.cpp \
 	Validate/VerifyCtorDtorAssign.hpp Virtual/ExpandCasts.cpp \
 	Virtual/ExpandCasts.hpp Virtual/Tables.cpp Virtual/Tables.hpp \
-	Virtual/VirtualDtor.cpp Virtual/VirtualDtor.hpp
+	Virtual/VirtualDtor.cpp Virtual/VirtualDtor.hpp $(SRC_LSP)
 SRCDEMANGLE = CompilationState.cpp $(SRC_AST) $(SRC_CODEGEN) \
 	$(SRC_COMMON) $(SRC_GENPOLY) $(SRC_INITTWEAK) \
 	$(SRC_RESOLVEXPR) $(SRC_SYMTAB) SymTab/Demangle.cpp \
-	SymTab/Demangle.hpp $(SRC_TUPLES) $(SRC_VALIDATE)
+	SymTab/Demangle.hpp $(SRC_TUPLES) $(SRC_VALIDATE) \
+	$(SRC_LSP)
 MAINTAINERCLEANFILES = ${libdir}/${notdir ${cfa_cpplib_PROGRAMS}}
 MOSTLYCLEANFILES = Parser/lex.cc Parser/parser.cc Parser/parser.hh \
 	Parser/parser.output
@@ -887,13 +892,17 @@ SRC_TUPLES = \
 SRC_VALIDATE = \
 	Validate/FindSpecialDecls.hpp
 
+SRC_LSP = \
+	LSP/Lsp.cpp \
+	LSP/Lsp.hpp
+
 
 # put into lib for now
 cfa_cpplibdir = $(CFA_LIBDIR)
 ___driver_cfa_cpp_SOURCES = $(SRC)
 ___driver_cfa_cpp_LDADD = -ldl $(LIBPROFILER) $(LIBTCMALLOC)
 EXTRA_DIST = include/cassert include/optional BasicTypes-gen.cpp
-AM_CXXFLAGS = @HOST_FLAGS@ -Wno-deprecated -Wall -Wextra -Werror=return-type -DDEBUG_ALL -I./Parser -I$(srcdir)/Parser -I$(srcdir)/include -DYY_NO_INPUT -O3 -g -std=c++17 $(TCMALLOCFLAG)
+AM_CXXFLAGS = @HOST_FLAGS@ -Wno-deprecated -Wall -Wextra -Werror=return-type -DDEBUG_ALL -I./Parser -I$(srcdir)/Parser -I$(srcdir)/include -I$(top_srcdir)/../third_party -DYY_NO_INPUT -O3 -g -std=c++17 $(TCMALLOCFLAG)
 AM_LDFLAGS = @HOST_FLAGS@ -Xlinker -export-dynamic
 ARFLAGS = cr
 ___driver_demangler_SOURCES = SymTab/demangler.cpp # test driver for the demangler, also useful as a sanity check that libdemangle.a is complete
@@ -906,7 +915,7 @@ all: $(BUILT_SOURCES)
 
 .SUFFIXES:
 .SUFFIXES: .cc .cpp .ll .lo .o .obj .yy
-$(srcdir)/Makefile.in:  $(srcdir)/Makefile.am $(srcdir)/AST/module.mk $(srcdir)/CodeGen/module.mk $(srcdir)/Concurrency/module.mk $(srcdir)/Common/module.mk $(srcdir)/ControlStruct/module.mk $(srcdir)/GenPoly/module.mk $(srcdir)/InitTweak/module.mk $(srcdir)/Parser/module.mk $(srcdir)/ResolvExpr/module.mk $(srcdir)/SymTab/module.mk $(srcdir)/Tuples/module.mk $(srcdir)/Validate/module.mk $(srcdir)/Virtual/module.mk $(am__configure_deps)
+$(srcdir)/Makefile.in:  $(srcdir)/Makefile.am $(srcdir)/AST/module.mk $(srcdir)/CodeGen/module.mk $(srcdir)/Concurrency/module.mk $(srcdir)/Common/module.mk $(srcdir)/ControlStruct/module.mk $(srcdir)/GenPoly/module.mk $(srcdir)/InitTweak/module.mk $(srcdir)/Parser/module.mk $(srcdir)/ResolvExpr/module.mk $(srcdir)/SymTab/module.mk $(srcdir)/Tuples/module.mk $(srcdir)/Validate/module.mk $(srcdir)/Virtual/module.mk $(srcdir)/LSP/module.mk $(am__configure_deps)
 	@for dep in $?; do \
 	  case '$(am__configure_deps)' in \
 	    *$$dep*) \
@@ -926,7 +935,7 @@ Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
 	    echo ' cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@ $(am__maybe_remake_depfiles)'; \
 	    cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@ $(am__maybe_remake_depfiles);; \
 	esac;
-$(srcdir)/AST/module.mk $(srcdir)/CodeGen/module.mk $(srcdir)/Concurrency/module.mk $(srcdir)/Common/module.mk $(srcdir)/ControlStruct/module.mk $(srcdir)/GenPoly/module.mk $(srcdir)/InitTweak/module.mk $(srcdir)/Parser/module.mk $(srcdir)/ResolvExpr/module.mk $(srcdir)/SymTab/module.mk $(srcdir)/Tuples/module.mk $(srcdir)/Validate/module.mk $(srcdir)/Virtual/module.mk $(am__empty):
+$(srcdir)/AST/module.mk $(srcdir)/CodeGen/module.mk $(srcdir)/Concurrency/module.mk $(srcdir)/Common/module.mk $(srcdir)/ControlStruct/module.mk $(srcdir)/GenPoly/module.mk $(srcdir)/InitTweak/module.mk $(srcdir)/Parser/module.mk $(srcdir)/ResolvExpr/module.mk $(srcdir)/SymTab/module.mk $(srcdir)/Tuples/module.mk $(srcdir)/Validate/module.mk $(srcdir)/Virtual/module.mk $(srcdir)/LSP/module.mk $(am__empty):
 
 $(top_builddir)/config.status: $(top_srcdir)/configure $(CONFIG_STATUS_DEPENDENCIES)
 	cd $(top_builddir) && $(MAKE) $(AM_MAKEFLAGS) am--refresh
@@ -1327,6 +1336,14 @@ Virtual/Tables.$(OBJEXT): Virtual/$(am__dirstamp) \
 	Virtual/$(DEPDIR)/$(am__dirstamp)
 Virtual/VirtualDtor.$(OBJEXT): Virtual/$(am__dirstamp) \
 	Virtual/$(DEPDIR)/$(am__dirstamp)
+LSP/$(am__dirstamp):
+	@$(MKDIR_P) LSP
+	@: > LSP/$(am__dirstamp)
+LSP/$(DEPDIR)/$(am__dirstamp):
+	@$(MKDIR_P) LSP/$(DEPDIR)
+	@: > LSP/$(DEPDIR)/$(am__dirstamp)
+LSP/Lsp.$(OBJEXT): LSP/$(am__dirstamp) \
+	LSP/$(DEPDIR)/$(am__dirstamp)
 ../driver/$(am__dirstamp):
 	@$(MKDIR_P) ../driver
 	@: > ../driver/$(am__dirstamp)
@@ -1356,6 +1373,7 @@ mostlyclean-compile:
 	-rm -f SymTab/*.$(OBJEXT)
 	-rm -f Tuples/*.$(OBJEXT)
 	-rm -f Validate/*.$(OBJEXT)
+	-rm -f LSP/*.$(OBJEXT)
 	-rm -f Virtual/*.$(OBJEXT)
 
 distclean-compile:
@@ -1492,6 +1510,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@Virtual/$(DEPDIR)/ExpandCasts.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@Virtual/$(DEPDIR)/Tables.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@Virtual/$(DEPDIR)/VirtualDtor.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@LSP/$(DEPDIR)/Lsp.Po@am__quote@ # am--include-marker
 
 $(am__depfiles_remade):
 	@$(MKDIR_P) $(@D)
@@ -1710,6 +1729,8 @@ distclean-generic:
 	-rm -f Validate/$(am__dirstamp)
 	-rm -f Virtual/$(DEPDIR)/$(am__dirstamp)
 	-rm -f Virtual/$(am__dirstamp)
+	-rm -f LSP/$(DEPDIR)/$(am__dirstamp)
+	-rm -f LSP/$(am__dirstamp)
 
 maintainer-clean-generic:
 	@echo "This command is intended for maintainers to use"
@@ -1856,6 +1877,7 @@ distclean: distclean-am
 	-rm -f Virtual/$(DEPDIR)/ExpandCasts.Po
 	-rm -f Virtual/$(DEPDIR)/Tables.Po
 	-rm -f Virtual/$(DEPDIR)/VirtualDtor.Po
+	-rm -f LSP/$(DEPDIR)/Lsp.Po
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
 	distclean-tags
@@ -2032,6 +2054,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f Virtual/$(DEPDIR)/ExpandCasts.Po
 	-rm -f Virtual/$(DEPDIR)/Tables.Po
 	-rm -f Virtual/$(DEPDIR)/VirtualDtor.Po
+	-rm -f LSP/$(DEPDIR)/Lsp.Po
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic
 
@@ -2078,6 +2101,13 @@ $(srcdir)/AST/BasicKind.hpp : BasicTypes-gen.cpp
 	${AM_V_GEN}${CXXCOMPILE} $< -o BasicTypes-gen -Wall -Wextra -Werror=return-type
 	@./BasicTypes-gen
 	@rm BasicTypes-gen
+
+# automake puts the top build directory on every include path (for config.h), and configure writes a file named
+# "version" there, which shadows the C++ <version> header that nlohmann/json includes. Lsp.cpp does not need
+# config.h, so it is compiled without that directory.
+LSP/Lsp.$(OBJEXT): LSP/Lsp.cpp
+	$(AM_V_CXX)$(CXX) $(DEFS) -I. -I$(srcdir) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) \
+		-MT $@ -MD -MP -MF LSP/$(DEPDIR)/Lsp.Tpo -c -o $@ $< && $(am__mv) LSP/$(DEPDIR)/Lsp.Tpo LSP/$(DEPDIR)/Lsp.Po
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

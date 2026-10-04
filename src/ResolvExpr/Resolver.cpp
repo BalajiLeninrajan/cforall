@@ -451,6 +451,9 @@ const ast::Expr * resolveStmtExpr(
 	const ast::StmtExpr * stmtExpr, const ResolveContext & context
 ) {
 	assert( stmtExpr );
+	// A statement expression is resolved while choosing among candidates, so its errors must reject the candidate.
+	ValueGuard< SemanticErrorException * > sinkGuard( SemanticErrorSink );
+	SemanticErrorSink = nullptr;
 	ast::Pass< Resolver > resolver( context );
 	auto ret = mutate(stmtExpr->accept(resolver));
 	strict_dynamic_cast< ast::StmtExpr * >( ret )->computeResult();
@@ -562,6 +565,8 @@ static const ast::Type * redactBoundDimExprs(
 
 const ast::FunctionDecl * Resolver::previsit( const ast::FunctionDecl * functionDecl ) {
 	GuardValue( functionReturn );
+	// A generated function that fails to resolve is deleted (see on_error), so its errors must reach the declaration.
+	if ( functionDecl->linkage == ast::Linkage::AutoGen ) GuardValue( SemanticErrorSink ) = nullptr;
 
 	assert (functionDecl->unique());
 	if (!functionDecl->has_body() && !functionDecl->withExprs.empty()) {

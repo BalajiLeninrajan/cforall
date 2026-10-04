@@ -99,6 +99,11 @@ struct TypeData {
 	};
 
 	CodeLocation location;
+	// For the LSP dump, unset if unknown: the name token of an aggregate or of a type instance, the whole aggregate
+	// declaration and its braces.
+	CodeLocation nameLoc;
+	CodeLocation extent;
+	CodeLocation bodyLoc;
 
 	Kind kind;
 	TypeData * base;

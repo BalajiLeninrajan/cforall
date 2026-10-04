@@ -20,7 +20,10 @@
 struct InitializerNode;
 
 struct ExpressionNode final : public ParseList<ExpressionNode> {
-	ExpressionNode( ast::Expr * expr = nullptr ) : expr( expr ) {}
+	ExpressionNode( ast::Expr * expr = nullptr ) : expr( expr ) {
+		// build() gives the expression this location, so keep the one the parser computed for it.
+		if ( expr && expr->location.isSet() ) location = expr->location;
+	}
 	virtual ~ExpressionNode() {}
 	virtual ExpressionNode * clone() const override {
 		if ( nullptr == expr ) return nullptr;

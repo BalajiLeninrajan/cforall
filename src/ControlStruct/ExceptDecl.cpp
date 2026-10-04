@@ -23,6 +23,7 @@
 #include "AST/Print.hpp"
 #include "AST/Type.hpp"
 #include "Virtual/Tables.hpp"
+#include "LSP/Lsp.hpp"
 
 namespace ControlStruct {
 
@@ -450,7 +451,14 @@ ast::StructDecl const * ExceptDeclCore::transformExcept(
 		createExceptionStructForward( location, exceptionName, forall ) );
 	declsToAddBefore.push_back(
 		createVirtualTableStruct( location, exceptionName, forall, params ) );
-	return createExceptionStruct( location, exceptionName, forall, params, members );
+	ast::StructDecl const * result = createExceptionStruct( location, exceptionName, forall, params, members );
+	if ( LSP::enabled ) {
+		ast::StructDecl * mut = ast::mutate( result );
+		mut->extent = decl->extent;
+		mut->bodyLocation = decl->bodyLocation;
+		LSP::recordException( location, exceptionName );
+	} // if
+	return result;
 }
 
 ast::NameExpr const * designatedName( ast::Designation const * des ) {
@@ -467,6 +475,7 @@ ast::ObjectDecl const * ExceptDeclCore::transformVTable(
 	std::string const & exceptionName = base->name;
 	std::vector<ast::ptr<ast::Expr>> const & params = base->params;
 	std::string const & tableName = decl->name;
+	if ( LSP::enabled && base->location.isSet() ) LSP::recordExceptionUse( base->location, exceptionName );
 
 	ast::ObjectDecl * retDecl;
 	if ( decl->storage.is_extern ) {
@@ -522,6 +531,7 @@ ast::ObjectDecl const * ExceptDeclCore::transformVTable(
 		}
 	}
 
+	if ( LSP::enabled ) retDecl->extent = decl->extent;
 	for ( ast::ptr<ast::Attribute> const & attr : decl->attributes ) {
 		retDecl->attributes.push_back( attr );
 	}

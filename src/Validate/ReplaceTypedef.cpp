@@ -20,6 +20,7 @@
 #include "Common/ScopedMap.hpp"
 #include "Common/UniqueName.hpp"
 #include "ResolvExpr/Unify.hpp"
+#include "LSP/Lsp.hpp"
 
 namespace Validate {
 
@@ -84,6 +85,14 @@ ast::Type const * ReplaceTypedefCore::postvisit(
 	TypedefMap::const_iterator def = typedefNames.find( type->name );
 	if ( def != typedefNames.end() ) {
 		ast::Type * ret = ast::deepCopy( def->second.first->base );
+		if ( LSP::enabled && type->location.isSet() ) {
+			if ( LSP::isRecordedTypedef( def->second.first ) ) {
+				LSP::recordTypedefUse( type->location, def->second.first );
+			} else if ( auto inst = dynamic_cast<ast::BaseInstType *>( ret ) ) {
+				// Implicit typedef of an aggregate: the use names the aggregate itself.
+				inst->location = type->location;
+			} // if
+		} // if
 		ret->qualifiers |= type->qualifiers;
 		// We ignore certain attributes on function parameters if they arrive
 		// by typedef. GCC appears to do the same thing.
@@ -176,6 +185,7 @@ ast::Decl const * ReplaceTypedefCore::postvisit(
 	} else {
 		typedefNames[ decl->name ] =
 			std::make_pair( TypedefDeclPtr( decl ), scopeLevel );
+		if ( LSP::enabled ) LSP::recordTypedef( decl, scopeLevel == 0 );
 	}
 
 	// When a typedef is a forward declaration:

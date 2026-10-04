@@ -82,6 +82,7 @@ struct DeclarationNode final : public ParseList<DeclarationNode> {
 	virtual void printList( __attribute__((unused)) std::ostream & os, __attribute__((unused)) int indent = 0 ) const override;
 
 	ast::Decl * build() const;
+	ast::Decl * buildNode() const;					// build() without the LSP locations
 	ast::Type * buildType() const;
 
 	ast::Linkage::Spec get_linkage() const { return linkage; }
@@ -128,6 +129,10 @@ struct DeclarationNode final : public ParseList<DeclarationNode> {
 	std::string error;
 	StatementNode * asmStmt = nullptr;
 	StatementNode * directiveStmt = nullptr;
+
+	// For the LSP dump: the token naming the declaration and the whole declaration. Unset if unknown.
+	CodeLocation nameLoc;
+	CodeLocation extent;
 
 	static UniqueName anonymous;
 }; // DeclarationNode

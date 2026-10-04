@@ -52,6 +52,7 @@
 #include "Common/Stats/Counter.hpp"
 
 #include "AST/Inspect.hpp"             // for getFunctionName
+#include "LSP/Lsp.hpp"                    // for LSP::enabled
 
 #define PRINT( text ) if ( resolvep ) { text }
 
@@ -633,6 +634,7 @@ namespace {
 
 		/// Completes a function candidate with arguments located
 		void validateFunctionCandidate(
+			const CodeLocation & location,
 			const CandidateRef & func, ArgPack & result, const std::vector< ArgPack > & results,
 			CandidateList & out );
 
@@ -649,6 +651,11 @@ namespace {
 		void addAggMembers(
 			const ast::BaseInstType * aggrInst, const ast::Expr * expr,
 			const Candidate & cand, const Cost & addedCost, const std::string & name
+		);
+		void addAggMembers(
+			const ast::BaseInstType * aggrInst, const ast::Expr * expr,
+			const Candidate & cand, const Cost & addedCost, const std::string & name,
+			const CodeLocation & location
 		);
 
 		void addEnumValueAsCandidate(const ast::EnumInstType * instType, const ast::Expr * expr,
@@ -734,11 +741,13 @@ namespace {
 
 	/// Completes a function candidate with arguments located
 	void Finder::validateFunctionCandidate(
+		const CodeLocation & location,
 		const CandidateRef & func, ArgPack & result, const std::vector< ArgPack > & results,
 		CandidateList & out
 	) {
-		ast::ApplicationExpr * appExpr =
-			new ast::ApplicationExpr{ func->expr->location, func->expr };
+		// In LSP mode a call covers its arguments (the dump's call expressions); the callee keeps the name.
+		ast::ApplicationExpr * appExpr = new ast::ApplicationExpr{
+			LSP::enabled && location.isSet() ? location : func->expr->location, func->expr };
 		// sum cost and accumulate arguments
 		std::deque< const ast::Expr * > args;
 		Cost cost = func->cost;
@@ -852,7 +861,7 @@ namespace {
 
 					// finish result when out of arguments
 					if ( nextArg >= args.size() ) {
-						validateFunctionCandidate( func, results[i], results, out );
+						validateFunctionCandidate( location, func, results[i], results, out );
 
 						continue;
 					}
@@ -892,7 +901,7 @@ namespace {
 			for ( std::size_t i = genStart; i < results.size(); ++i ) {
 				ArgPack & result = results[i];
 				if ( ! result.hasExpl() && result.nextArg >= args.size() ) {
-					validateFunctionCandidate( func, result, results, out );
+					validateFunctionCandidate( location, func, result, results, out );
 				}
 			}
 		}
@@ -946,10 +955,19 @@ namespace {
 		const ast::BaseInstType * aggrInst, const ast::Expr * expr,
 		const Candidate & cand, const Cost & addedCost, const std::string & name
 	) {
+		addAggMembers( aggrInst, expr, cand, addedCost, name, expr->location );
+	}
+
+	/// Adds aggregate member interpretations, located at `location` (the member name for x.f)
+	void Finder::addAggMembers(
+		const ast::BaseInstType * aggrInst, const ast::Expr * expr,
+		const Candidate & cand, const Cost & addedCost, const std::string & name,
+		const CodeLocation & location
+	) {
 		for ( const ast::Decl * decl : aggrInst->lookup( name ) ) {
 			auto dwt = strict_dynamic_cast< const ast::DeclWithType * >( decl );
 			CandidateRef newCand = std::make_shared<Candidate>(
-				cand, new ast::MemberExpr{ expr->location, dwt, expr }, addedCost );
+				cand, new ast::MemberExpr{ location, dwt, expr }, addedCost );
 			// add anonymous member interpretations whenever an aggregate value type is seen
 			// as a member expression
 			addAnonConversions( newCand );
@@ -1311,8 +1329,13 @@ namespace {
 					matches.clear();
 				}
 				if (cand->cost == minExprCost) {
+					const ast::Expr * cast = restructureCast( cand->expr, toType, castExpr->isGenerated );
+					// An explicit cast keeps its own location (the whole cast) rather than its argument's.
+					if ( castExpr->isGenerated == ast::ExplicitCast && cast->location.isSet() && castExpr->location.isSet() ) {
+						if ( auto ce = dynamic_cast< const ast::CastExpr * >( cast ) ) ast::mutate( ce )->location = castExpr->location;
+					} // if
 					CandidateRef newCand = std::make_shared<Candidate>(
-						restructureCast( cand->expr, toType, castExpr->isGenerated ),
+						cast,
 						copy( cand->env ), std::move( open ), std::move( need ), cand->cost);
 					// currently assertions are always resolved immediately so this should have no effect.
 					// if this somehow changes in the future (e.g. delayed by indeterminate return type)
@@ -1408,10 +1431,10 @@ namespace {
 			// find member of the given type
 			if ( auto structInst = agg->expr->result.as< ast::StructInstType >() ) {
 				addAggMembers(
-					structInst, agg->expr, *agg, addedCost, getMemberName( memberExpr ) );
+					structInst, agg->expr, *agg, addedCost, getMemberName( memberExpr ), memberExpr->location );
 			} else if ( auto unionInst = agg->expr->result.as< ast::UnionInstType >() ) {
 				addAggMembers(
-					unionInst, agg->expr, *agg, addedCost, getMemberName( memberExpr ) );
+					unionInst, agg->expr, *agg, addedCost, getMemberName( memberExpr ), memberExpr->location );
 			} else if ( auto tupleType = agg->expr->result.as< ast::TupleType >() ) {
 				addTupleMembers( tupleType, agg->expr, *agg, addedCost, memberExpr->member );
 			}

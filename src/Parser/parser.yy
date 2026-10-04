@@ -100,6 +100,42 @@ bool appendStr( string & to, string & from ) {
 	return true;
 } // appendStr
 
+// Source ranges for the LSP dump: nameLoc is the token naming a declaration or type, extent covers a whole
+// declaration and bodyLoc the braces of an aggregate.
+
+static DeclarationNode * setNameLoc( DeclarationNode * decl, const CodeLocation & loc ) {
+	if ( decl ) decl->nameLoc = loc;
+	return decl;
+} // setNameLoc
+
+static DeclarationNode * setExtent( DeclarationNode * decls, const CodeLocation & loc ) {
+	for ( DeclarationNode * cur = decls ; cur ; cur = cur->next ) {
+		if ( cur->extent.isUnset() ) cur->extent = loc;
+	} // for
+	return decls;
+} // setExtent
+
+static TypeData * setTypeNameLoc( TypeData * type, const CodeLocation & loc ) {
+	if ( type ) type->nameLoc = loc;
+	return type;
+} // setTypeNameLoc
+
+static DeclarationNode * setAggrLocs( DeclarationNode * decl, const CodeLocation & name, const CodeLocation & extent, const CodeLocation & body ) {
+	if ( decl && decl->type ) {
+		decl->type->nameLoc = name;
+		decl->type->extent = extent;
+		decl->type->bodyLoc = body;
+	} // if
+	return decl;
+} // setAggrLocs
+
+static CodeLocation span( const CodeLocation & first, const CodeLocation & last ) {
+	CodeLocation loc = first;
+	loc.last_line = last.last_line;
+	loc.last_column = last.last_column;
+	return loc;
+} // span
+
 DeclarationNode * distTypeSpec( DeclarationNode * typeSpec, DeclarationNode * declList ) {
 	// Distribute type specifier across all declared variables, e.g., static, const, __attribute__.
 	assert( declList );
@@ -250,23 +286,23 @@ static ForCtrl * makeForCtrl( const CodeLocation & location, DeclarationNode * i
 
 ForCtrl * forCtrl( const CodeLocation & location, DeclarationNode * index, ExpressionNode * start, OperKinds compop, ExpressionNode * comp, ExpressionNode * inc ) {
 	if ( index->initializer ) {
-		SemanticError( yylloc, "illegal syntax, direct initialization disallowed. Use instead: type var; initialization ~ comparison ~ increment." );
+		SemanticError( location, "illegal syntax, direct initialization disallowed. Use instead: type var; initialization ~ comparison ~ increment." );
 	} // if
 	if ( index->next ) {
-		SemanticError( yylloc, "illegal syntax, multiple loop indexes disallowed in for-loop declaration." );
+		SemanticError( location, "illegal syntax, multiple loop indexes disallowed in for-loop declaration." );
 	} // if
 	DeclarationNode * initDecl = index->addInitializer( new InitializerNode( start ) );
 	return makeForCtrl( location, initDecl, compop, comp, inc );
 } // forCtrl
 
-ForCtrl * forCtrl( const CodeLocation & location, ExpressionNode * type, string * index, ExpressionNode * start, OperKinds compop, ExpressionNode * comp, ExpressionNode * inc ) {
+ForCtrl * forCtrl( const CodeLocation & location, ExpressionNode * type, string * index, ExpressionNode * start, OperKinds compop, ExpressionNode * comp, ExpressionNode * inc, const CodeLocation & indexLoc = CodeLocation() ) {
 	ast::ConstantExpr * constant = dynamic_cast<ast::ConstantExpr *>(type->expr.get());
 	if ( constant && (constant->rep == "0" || constant->rep == "1") ) {
 		type = new ExpressionNode( new ast::CastExpr( location, maybeMoveBuild(type), new ast::BasicType( ast::BasicKind::SignedInt ) ) );
 	} // if
 	DeclarationNode * initDecl = distTypeSpec(
 		DeclarationNode::newTypeof( type, true ),
-		DeclarationNode::newName( index )->addInitializer( new InitializerNode( start ) )
+		setNameLoc( DeclarationNode::newName( index ), indexLoc )->addInitializer( new InitializerNode( start ) )
 	);
 	return makeForCtrl( location, initDecl, compop, comp, inc );
 } // forCtrl
@@ -275,9 +311,9 @@ ForCtrl * forCtrl( const CodeLocation & location, ExpressionNode * type, string 
 
 ForCtrl * forCtrl( const CodeLocation & location, ExpressionNode * type, ExpressionNode * index, ExpressionNode * start, OperKinds compop, ExpressionNode * comp, ExpressionNode * inc ) {
 	if ( auto identifier = dynamic_cast<ast::NameExpr *>(index->expr.get()) ) {
-		return forCtrl( location, type, new string( identifier->name ), start, compop, comp, inc );
+		return forCtrl( location, type, new string( identifier->name ), start, compop, comp, inc, identifier->location );
 	} else {
-		SemanticError( yylloc, MISSING_LOOP_INDEX ); return nullptr;
+		SemanticError( location, MISSING_LOOP_INDEX ); return nullptr;
 	} // if
 } // forCtrl
 
@@ -285,7 +321,7 @@ ForCtrl * enumRangeCtrl( ExpressionNode * index_expr, OperKinds compop, Expressi
 	assert( compop == OperKinds::LEThan || compop == OperKinds::GEThan );
 	if ( auto identifier = dynamic_cast<ast::NameExpr *>(index_expr->expr.get()) ) {
 		DeclarationNode * indexDecl =
-			DeclarationNode::newName( new std::string(identifier->name) )->addType( type );
+			setNameLoc( DeclarationNode::newName( new std::string(identifier->name) ), identifier->location )->addType( type );
 		return new ForCtrl( new StatementNode( indexDecl ), range_over_expr, compop );
 	} else {
 		SemanticError( yylloc, MISSING_LOOP_INDEX ); return nullptr;
@@ -307,13 +343,22 @@ static void IdentifierBeforeType( string & identifier, const char * kind ) {
 bool forall = false;									// aggregate have one or more forall qualifiers ?
 
 // https://www.gnu.org/software/bison/manual/bison.html#Location-Type
+// Empty symbols (e.g., push, attribute_list_opt) sit at the end of the previous token, so they are skipped at both
+// ends of a rule; otherwise a rule starting with one would begin at the previous token, possibly on an earlier line.
+static inline bool emptyLoc( const CodeLocation & loc ) {
+	return loc.first_line == loc.last_line && loc.first_column == loc.last_column;
+}
+
 #define YYLLOC_DEFAULT(Cur, Rhs, N)												\
 if ( N ) {																		\
-	(Cur).first_line   = YYRHSLOC( Rhs, 1 ).first_line;							\
-	(Cur).first_column = YYRHSLOC( Rhs, 1 ).first_column;						\
-	(Cur).last_line    = YYRHSLOC( Rhs, N ).last_line;							\
-	(Cur).last_column  = YYRHSLOC( Rhs, N ).last_column;						\
-	(Cur).filename     = YYRHSLOC( Rhs, 1 ).filename;							\
+	int first_ = 1, last_ = N;													\
+	while ( first_ < last_ && emptyLoc( YYRHSLOC( Rhs, first_ ) ) ) first_ += 1; \
+	while ( last_ > first_ && emptyLoc( YYRHSLOC( Rhs, last_ ) ) ) last_ -= 1;	\
+	(Cur).first_line   = YYRHSLOC( Rhs, first_ ).first_line;					\
+	(Cur).first_column = YYRHSLOC( Rhs, first_ ).first_column;					\
+	(Cur).last_line    = YYRHSLOC( Rhs, last_ ).last_line;						\
+	(Cur).last_column  = YYRHSLOC( Rhs, last_ ).last_column;					\
+	(Cur).filename     = YYRHSLOC( Rhs, first_ ).filename;						\
 } else {																		\
 	(Cur).first_line   = (Cur).last_line = YYRHSLOC( Rhs, 0 ).last_line;		\
 	(Cur).first_column = (Cur).last_column = YYRHSLOC( Rhs, 0 ).last_column;	\
@@ -661,11 +706,11 @@ pop:
 
 constant:
 		// ENUMERATIONconstant is not included here; it is treated as a variable with type "enumeration constant".
-	INTEGERconstant								{ $$ = new ExpressionNode( build_constantInteger( yylloc, *$1 ) ); }
-	| FLOATING_DECIMALconstant					{ $$ = new ExpressionNode( build_constantFloat( yylloc, *$1 ) ); }
-	| FLOATING_FRACTIONconstant					{ $$ = new ExpressionNode( build_constantFloat( yylloc, *$1 ) ); }
-	| FLOATINGconstant							{ $$ = new ExpressionNode( build_constantFloat( yylloc, *$1 ) ); }
-	| CHARACTERconstant							{ $$ = new ExpressionNode( build_constantChar( yylloc, *$1 ) ); }
+	INTEGERconstant								{ $$ = new ExpressionNode( build_constantInteger( @$, *$1 ) ); }
+	| FLOATING_DECIMALconstant					{ $$ = new ExpressionNode( build_constantFloat( @$, *$1 ) ); }
+	| FLOATING_FRACTIONconstant					{ $$ = new ExpressionNode( build_constantFloat( @$, *$1 ) ); }
+	| FLOATINGconstant							{ $$ = new ExpressionNode( build_constantFloat( @$, *$1 ) ); }
+	| CHARACTERconstant							{ $$ = new ExpressionNode( build_constantChar( @$, *$1 ) ); }
 	;
 
 quasi_keyword:											// CFA
@@ -697,7 +742,7 @@ identifier_or_type_name:
 	;
 
 string_literal:
-	string_literal_list							{ $$ = new ExpressionNode( build_constantStr( yylloc, *$1 ) ); }
+	string_literal_list							{ $$ = new ExpressionNode( build_constantStr( @$, *$1 ) ); }
 	;
 
 string_literal_list:									// juxtaposed strings are concatenated
@@ -714,20 +759,20 @@ string_literal_list:									// juxtaposed strings are concatenated
 
 primary_expression:
 	IDENTIFIER											// typedef name cannot be used as a variable name
-		{ $$ = new ExpressionNode( build_varref( yylloc, $1 ) ); }
+		{ $$ = new ExpressionNode( build_varref( @$, $1 ) ); }
 	| quasi_keyword
-		{ $$ = new ExpressionNode( build_varref( yylloc, $1 ) ); }
+		{ $$ = new ExpressionNode( build_varref( @$, $1 ) ); }
 	| TYPEDIMname										// CFA, generic length argument
-		{ $$ = new ExpressionNode( build_dimensionref( yylloc, $1 ) ); }
+		{ $$ = new ExpressionNode( build_dimensionref( @$, $1 ) ); }
 	| tuple
 	| '(' comma_expression ')'
 		{ $$ = $2; }
 	| '(' compound_statement ')'						// GCC, lambda expression
-		{ $$ = new ExpressionNode( new ast::StmtExpr( yylloc, dynamic_cast<ast::CompoundStmt *>( maybeMoveBuild( $2 ) ) ) ); }
+		{ $$ = new ExpressionNode( new ast::StmtExpr( @$, dynamic_cast<ast::CompoundStmt *>( maybeMoveBuild( $2 ) ) ) ); }
 	| type_name '.' identifier							// CFA, nested type
-		{ $$ = new ExpressionNode( build_qualified_expr( yylloc, DeclarationNode::newFromTypeData( $1 ), build_varref( yylloc, $3 ) ) ); }
+		{ $$ = new ExpressionNode( build_qualified_expr( @$, DeclarationNode::newFromTypeData( $1 ), build_varref( @3, $3 ) ) ); }
 	| type_name '.' '[' field_name_list ']'				// CFA, nested type / tuple field selector
-		{ SemanticError( yylloc, "Qualified name is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "Qualified name is currently unimplemented." ); $$ = nullptr; }
 	| GENERIC '(' assignment_expression ',' generic_assoc_list ')' // C11
 		{
 			// add the missing control expression to the GenericExpr and return it
@@ -735,9 +780,9 @@ primary_expression:
 			$$ = new ExpressionNode( $5 );
 		}
 	// | RESUME '(' comma_expression ')'
-	//   	{ SemanticError( yylloc, "Resume expression is currently unimplemented." ); $$ = nullptr; }
+	//   	{ SemanticError( @$, "Resume expression is currently unimplemented." ); $$ = nullptr; }
 	// | RESUME '(' comma_expression ')' compound_statement
-	//   	{ SemanticError( yylloc, "Resume expression is currently unimplemented." ); $$ = nullptr; }
+	//   	{ SemanticError( @$, "Resume expression is currently unimplemented." ); $$ = nullptr; }
 	| IDENTIFIER IDENTIFIER								// invalid syntax rule
 		{ IdentifierBeforeIdentifier( *$1.str, *$2.str, "expression" ); $$ = nullptr; }
 	| IDENTIFIER type_qualifier							// invalid syntax rule
@@ -768,10 +813,10 @@ generic_association:									// C11
 	type_no_function ':' assignment_expression
 		{
 			// create a GenericExpr wrapper with one association pair
-			$$ = new ast::GenericExpr( yylloc, nullptr, { { maybeMoveBuildType( $1 ), maybeMoveBuild( $3 ) } } );
+			$$ = new ast::GenericExpr( @$, nullptr, { { maybeMoveBuildType( $1 ), maybeMoveBuild( $3 ) } } );
 		}
 	| DEFAULT ':' assignment_expression
-		{ $$ = new ast::GenericExpr( yylloc, nullptr, { { maybeMoveBuild( $3 ) } } ); }
+		{ $$ = new ast::GenericExpr( @$, nullptr, { { maybeMoveBuild( $3 ) } } ); }
 	;
 
 postfix_expression:
@@ -780,27 +825,27 @@ postfix_expression:
 		// Historic, transitional: Disallow commas in subscripts.
 		// Switching to this behaviour may help check if a C compatibilty case uses comma-exprs in subscripts.
 		// Current: Commas in subscripts make tuples.
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::Index, $1, new ExpressionNode( build_tuple( yylloc, $3 ) ) ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::Index, $1, new ExpressionNode( build_tuple( @$, $3 ) ) ) ); }
 	| constant '[' assignment_expression ']'			// 3[a], 'a'[a], 3.5[a]
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::Index, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::Index, $1, $3 ) ); }
 	| string_literal '[' assignment_expression ']'		// "abc"[3], 3["abc"]
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::Index, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::Index, $1, $3 ) ); }
 	| postfix_expression '{' argument_expression_list_opt '}' // CFA, constructor call
 		{
 			Token fn;
 			fn.str = new std::string( "?{}" );			// location undefined - use location of '{'?
-			$$ = new ExpressionNode( new ast::ConstructorExpr( yylloc, build_func( yylloc, new ExpressionNode( build_varref( yylloc, fn ) ), $1->set_last( $3 ) ) ) );
+			$$ = new ExpressionNode( new ast::ConstructorExpr( @$, build_func( @$, new ExpressionNode( build_varref( @$, fn ) ), $1->set_last( $3 ) ) ) );
 		}
 	| postfix_expression '(' argument_expression_list_opt ')'
-		{ $$ = new ExpressionNode( build_func( yylloc, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_func( @$, $1, $3 ) ); }
 	| VA_ARG '(' primary_expression ',' declaration_specifier_nobody abstract_parameter_declarator_opt ')'
-		{ $$ = new ExpressionNode( build_va_arg( yylloc, $3, ( $6 ? $6->addType( $5 ) : $5 ) ) ); }
+		{ $$ = new ExpressionNode( build_va_arg( @$, $3, ( $6 ? $6->addType( $5 ) : $5 ) ) ); }
 	| postfix_expression '`' identifier					// CFA, postfix call
-		{ $$ = new ExpressionNode( build_func( yylloc, new ExpressionNode( build_varref( yylloc, build_postfix_name( $3 ) ) ), $1 ) ); }
+		{ $$ = new ExpressionNode( build_func( @$, new ExpressionNode( build_varref( @3, build_postfix_name( $3 ) ) ), $1 ) ); }
 	| constant '`' identifier							// CFA, postfix call
-		{ $$ = new ExpressionNode( build_func( yylloc, new ExpressionNode( build_varref( yylloc, build_postfix_name( $3 ) ) ), $1 ) ); }
+		{ $$ = new ExpressionNode( build_func( @$, new ExpressionNode( build_varref( @3, build_postfix_name( $3 ) ) ), $1 ) ); }
 	| string_literal '`' identifier						// CFA, postfix call
-		{ $$ = new ExpressionNode( build_func( yylloc, new ExpressionNode( build_varref( yylloc, build_postfix_name( $3 ) ) ), $1 ) ); }
+		{ $$ = new ExpressionNode( build_func( @$, new ExpressionNode( build_varref( @3, build_postfix_name( $3 ) ) ), $1 ) ); }
 
 		// SKULLDUGGERY: The typedef table used for parsing does not store fields in structures. To parse a qualified
 		// name, it is assumed all name-tokens after the first are identifiers, regardless of how the lexer identifies
@@ -820,35 +865,35 @@ postfix_expression:
 		//       z.E;  // lexer returns E is TYPEDEFname
 		//   }
 	| postfix_expression '.' identifier_or_type_name
-		{ $$ = new ExpressionNode( build_fieldSel( yylloc, $1, build_varref( yylloc, $3 ) ) ); }
+		{ $$ = new ExpressionNode( build_fieldSel( @3, $1, build_varref( @3, $3 ) ) ); }
 
 	| postfix_expression '.' INTEGERconstant			// CFA, tuple index
-		{ $$ = new ExpressionNode( build_fieldSel( yylloc, $1, build_constantInteger( yylloc, *$3 ) ) ); }
+		{ $$ = new ExpressionNode( build_fieldSel( @$, $1, build_constantInteger( @$, *$3 ) ) ); }
 	| postfix_expression FLOATING_FRACTIONconstant		// CFA, tuple index
-		{ $$ = new ExpressionNode( build_fieldSel( yylloc, $1, build_field_name_FLOATING_FRACTIONconstant( yylloc, *$2 ) ) ); }
+		{ $$ = new ExpressionNode( build_fieldSel( @$, $1, build_field_name_FLOATING_FRACTIONconstant( @$, *$2 ) ) ); }
 	| postfix_expression '.' '[' field_name_list ']'	// CFA, tuple field selector
-		{ $$ = new ExpressionNode( build_fieldSel( yylloc, $1, build_tuple( yylloc, $4 ) ) ); }
+		{ $$ = new ExpressionNode( build_fieldSel( @$, $1, build_tuple( @$, $4 ) ) ); }
 	| postfix_expression '.' aggregate_control
-		{ $$ = new ExpressionNode( build_keyword_cast( yylloc, $3, $1 ) ); }
+		{ $$ = new ExpressionNode( build_keyword_cast( @$, $3, $1 ) ); }
 	| postfix_expression ARROW identifier
-		{ $$ = new ExpressionNode( build_pfieldSel( yylloc, $1, build_varref( yylloc, $3 ) ) ); }
+		{ $$ = new ExpressionNode( build_pfieldSel( @3, $1, build_varref( @3, $3 ) ) ); }
 	| postfix_expression ARROW INTEGERconstant			// CFA, tuple index
-		{ $$ = new ExpressionNode( build_pfieldSel( yylloc, $1, build_constantInteger( yylloc, *$3 ) ) ); }
+		{ $$ = new ExpressionNode( build_pfieldSel( @$, $1, build_constantInteger( @$, *$3 ) ) ); }
 	| postfix_expression ARROW '[' field_name_list ']'	// CFA, tuple field selector
-		{ $$ = new ExpressionNode( build_pfieldSel( yylloc, $1, build_tuple( yylloc, $4 ) ) ); }
+		{ $$ = new ExpressionNode( build_pfieldSel( @$, $1, build_tuple( @$, $4 ) ) ); }
 	| postfix_expression ICR
-		{ $$ = new ExpressionNode( build_unary_val( yylloc, OperKinds::IncrPost, $1 ) ); }
+		{ $$ = new ExpressionNode( build_unary_val( @$, OperKinds::IncrPost, $1 ) ); }
 	| postfix_expression DECR
-		{ $$ = new ExpressionNode( build_unary_val( yylloc, OperKinds::DecrPost, $1 ) ); }
+		{ $$ = new ExpressionNode( build_unary_val( @$, OperKinds::DecrPost, $1 ) ); }
 	| '(' type_no_function ')' '{' initializer_list_opt comma_opt '}' // C99, compound-literal
-		{ $$ = new ExpressionNode( build_compoundLiteral( yylloc, $2, new InitializerNode( $5, true ) ) ); }
+		{ $$ = new ExpressionNode( build_compoundLiteral( @$, $2, new InitializerNode( $5, true ) ) ); }
 	| '(' type_no_function ')' '@' '{' initializer_list_opt comma_opt '}' // CFA, explicit C compound-literal
-		{ $$ = new ExpressionNode( build_compoundLiteral( yylloc, $2, (new InitializerNode( $6, true ))->set_maybeConstructed( false ) ) ); }
+		{ $$ = new ExpressionNode( build_compoundLiteral( @$, $2, (new InitializerNode( $6, true ))->set_maybeConstructed( false ) ) ); }
 	| '^' primary_expression '{' argument_expression_list_opt '}' // CFA, destructor call
 		{
 			Token fn;
 			fn.str = new string( "^?{}" );				// location undefined
-			$$ = new ExpressionNode( build_func( yylloc, new ExpressionNode( build_varref( yylloc, fn ) ), $2->set_last( $4 ) ) );
+			$$ = new ExpressionNode( build_func( @$, new ExpressionNode( build_varref( @$, fn ) ), $2->set_last( $4 ) ) );
 		}
 	;
 
@@ -860,26 +905,26 @@ field_name_list:										// CFA, tuple field selector
 field:													// CFA, tuple field selector
 	field_name
 	| FLOATING_DECIMALconstant field
-		{ $$ = new ExpressionNode( build_fieldSel( yylloc, new ExpressionNode( build_field_name_FLOATING_DECIMALconstant( yylloc, *$1 ) ), maybeMoveBuild( $2 ) ) ); }
+		{ $$ = new ExpressionNode( build_fieldSel( @$, new ExpressionNode( build_field_name_FLOATING_DECIMALconstant( @$, *$1 ) ), maybeMoveBuild( $2 ) ) ); }
 	| FLOATING_DECIMALconstant '[' field_name_list ']'
-		{ $$ = new ExpressionNode( build_fieldSel( yylloc, new ExpressionNode( build_field_name_FLOATING_DECIMALconstant( yylloc, *$1 ) ), build_tuple( yylloc, $3 ) ) ); }
+		{ $$ = new ExpressionNode( build_fieldSel( @$, new ExpressionNode( build_field_name_FLOATING_DECIMALconstant( @$, *$1 ) ), build_tuple( @$, $3 ) ) ); }
 	| field_name '.' field
-		{ $$ = new ExpressionNode( build_fieldSel( yylloc, $1, maybeMoveBuild( $3 ) ) ); }
+		{ $$ = new ExpressionNode( build_fieldSel( @$, $1, maybeMoveBuild( $3 ) ) ); }
 	| field_name '.' '[' field_name_list ']'
-		{ $$ = new ExpressionNode( build_fieldSel( yylloc, $1, build_tuple( yylloc, $4 ) ) ); }
+		{ $$ = new ExpressionNode( build_fieldSel( @$, $1, build_tuple( @$, $4 ) ) ); }
 	| field_name ARROW field
-		{ $$ = new ExpressionNode( build_pfieldSel( yylloc, $1, maybeMoveBuild( $3 ) ) ); }
+		{ $$ = new ExpressionNode( build_pfieldSel( @$, $1, maybeMoveBuild( $3 ) ) ); }
 	| field_name ARROW '[' field_name_list ']'
-		{ $$ = new ExpressionNode( build_pfieldSel( yylloc, $1, build_tuple( yylloc, $4 ) ) ); }
+		{ $$ = new ExpressionNode( build_pfieldSel( @$, $1, build_tuple( @$, $4 ) ) ); }
 	;
 
 field_name:
 	INTEGERconstant	fraction_constants_opt
-		{ $$ = new ExpressionNode( build_field_name_fraction_constants( yylloc, build_constantInteger( yylloc, *$1 ), $2 ) ); }
+		{ $$ = new ExpressionNode( build_field_name_fraction_constants( @$, build_constantInteger( @$, *$1 ), $2 ) ); }
 	| FLOATINGconstant fraction_constants_opt
-		{ $$ = new ExpressionNode( build_field_name_fraction_constants( yylloc, build_field_name_FLOATINGconstant( yylloc, *$1 ), $2 ) ); }
+		{ $$ = new ExpressionNode( build_field_name_fraction_constants( @$, build_field_name_FLOATINGconstant( @$, *$1 ), $2 ) ); }
 	| identifier_at fraction_constants_opt				// CFA, allow anonymous fields
-		{ $$ = new ExpressionNode( build_field_name_fraction_constants( yylloc, build_varref( yylloc, $1 ), $2 ) );	}
+		{ $$ = new ExpressionNode( build_field_name_fraction_constants( @$, build_varref( @1, $1 ), $2 ) );	}
 	;
 
 fraction_constants_opt:
@@ -887,8 +932,8 @@ fraction_constants_opt:
 		{ $$ = nullptr; }
 	| fraction_constants_opt FLOATING_FRACTIONconstant
 		{
-			ast::Expr * constant = build_field_name_FLOATING_FRACTIONconstant( yylloc, *$2 );
-			$$ = $1 != nullptr ? new ExpressionNode( build_fieldSel( yylloc, $1, constant ) ) : new ExpressionNode( constant );
+			ast::Expr * constant = build_field_name_FLOATING_FRACTIONconstant( @$, *$2 );
+			$$ = $1 != nullptr ? new ExpressionNode( build_fieldSel( @$, $1, constant ) ) : new ExpressionNode( constant );
 		}
 	;
 
@@ -911,7 +956,7 @@ unary_expression:
 				$$ = new ExpressionNode( new ast::AddressExpr( maybeMoveBuild( $2 ) ) );
 				break;
 			case OperKinds::PointTo:
-				$$ = new ExpressionNode( build_unary_val( yylloc, $1, $2 ) );
+				$$ = new ExpressionNode( build_unary_val( @$, $1, $2 ) );
 				break;
 			case OperKinds::And:
 				$$ = new ExpressionNode( new ast::AddressExpr( new ast::AddressExpr( maybeMoveBuild( $2 ) ) ) );
@@ -921,42 +966,42 @@ unary_expression:
 			}
 		}
 	| unary_operator cast_expression
-		{ $$ = new ExpressionNode( build_unary_val( yylloc, $1, $2 ) ); }
+		{ $$ = new ExpressionNode( build_unary_val( @$, $1, $2 ) ); }
 	| ICR unary_expression
-		{ $$ = new ExpressionNode( build_unary_val( yylloc, OperKinds::Incr, $2 ) ); }
+		{ $$ = new ExpressionNode( build_unary_val( @$, OperKinds::Incr, $2 ) ); }
 	| DECR unary_expression
-		{ $$ = new ExpressionNode( build_unary_val( yylloc, OperKinds::Decr, $2 ) ); }
+		{ $$ = new ExpressionNode( build_unary_val( @$, OperKinds::Decr, $2 ) ); }
 	| SIZEOF unary_expression
-		{ $$ = new ExpressionNode( new ast::SizeofExpr( yylloc, new ast::TypeofType( maybeMoveBuild( $2 ) ) ) ); }
+		{ $$ = new ExpressionNode( new ast::SizeofExpr( @$, new ast::TypeofType( maybeMoveBuild( $2 ) ) ) ); }
 	| SIZEOF '(' type_no_function ')'
-		{ $$ = new ExpressionNode( new ast::SizeofExpr( yylloc, maybeMoveBuildType( $3 ) ) ); }
+		{ $$ = new ExpressionNode( new ast::SizeofExpr( @$, maybeMoveBuildType( $3 ) ) ); }
 	| SIZEOF '(' attribute_list type_no_function ')'
-		{ $$ = new ExpressionNode( new ast::SizeofExpr( yylloc, maybeMoveBuildType( $4->addQualifiers( $3 ) ) ) ); }
+		{ $$ = new ExpressionNode( new ast::SizeofExpr( @$, maybeMoveBuildType( $4->addQualifiers( $3 ) ) ) ); }
 	| alignof_operator unary_expression						// GCC, variable alignment
-		{ $$ = new ExpressionNode( new ast::AlignofExpr( yylloc, new ast::TypeofType( maybeMoveBuild( $2 ) ),
+		{ $$ = new ExpressionNode( new ast::AlignofExpr( @$, new ast::TypeofType( maybeMoveBuild( $2 ) ),
 					$1 == OperKinds::AlignOf ? ast::AlignofExpr::Alignof : ast::AlignofExpr::__Alignof ) ); }
 	| alignof_operator '(' type_no_function ')'					// GCC, type alignment
-		{ $$ = new ExpressionNode( new ast::AlignofExpr( yylloc, maybeMoveBuildType( $3 ),
+		{ $$ = new ExpressionNode( new ast::AlignofExpr( @$, maybeMoveBuildType( $3 ),
 					$1 == OperKinds::AlignOf ? ast::AlignofExpr::Alignof : ast::AlignofExpr::__Alignof ) ); }
 
 		// Cannot use rule "type", which includes cfa_abstract_function, for sizeof/alignof, because of S/R problems on
 		// look ahead, so the cfa_abstract_function is factored out.
 	| SIZEOF '(' cfa_abstract_function ')'
-		{ $$ = new ExpressionNode( new ast::SizeofExpr( yylloc, maybeMoveBuildType( $3 ) ) ); }
+		{ $$ = new ExpressionNode( new ast::SizeofExpr( @$, maybeMoveBuildType( $3 ) ) ); }
 	| alignof_operator '(' cfa_abstract_function ')'			// GCC, type alignment
-		{ $$ = new ExpressionNode( new ast::AlignofExpr( yylloc, maybeMoveBuildType( $3 ),
+		{ $$ = new ExpressionNode( new ast::AlignofExpr( @$, maybeMoveBuildType( $3 ),
 					$1 == OperKinds::AlignOf ? ast::AlignofExpr::Alignof : ast::AlignofExpr::__Alignof ) ); }
 	| OFFSETOF '(' type_no_function ',' identifier ')'
-		{ $$ = new ExpressionNode( build_offsetOf( yylloc, $3, build_varref( yylloc, $5 ) ) ); }
+		{ $$ = new ExpressionNode( build_offsetOf( @$, $3, build_varref( @5, $5 ) ) ); }
 	| TYPEID '(' type ')'
 		{
-			SemanticError( yylloc, "typeid name is currently unimplemented." ); $$ = nullptr;
+			SemanticError( @$, "typeid name is currently unimplemented." ); $$ = nullptr;
 			// $$ = new ExpressionNode( build_offsetOf( $3, build_varref( $5 ) ) );
 		}
 	| COUNTOF unary_expression
-		{ $$ = new ExpressionNode( new ast::CountofExpr( yylloc, new ast::TypeofType( maybeMoveBuild( $2 ) ) ) ); }
+		{ $$ = new ExpressionNode( new ast::CountofExpr( @$, new ast::TypeofType( maybeMoveBuild( $2 ) ) ) ); }
 	| COUNTOF '(' type_no_function ')'
-		{ $$ = new ExpressionNode( new ast::CountofExpr( yylloc, maybeMoveBuildType( $3 ) ) ); }
+		{ $$ = new ExpressionNode( new ast::CountofExpr( @$, maybeMoveBuildType( $3 ) ) ); }
 	;
 
 alignof_operator:
@@ -981,23 +1026,23 @@ unary_operator:
 cast_expression:
 	unary_expression
 	| '(' type_no_function ')' cast_expression
-		{ $$ = new ExpressionNode( build_cast( yylloc, $2, $4 ) ); }
+		{ $$ = new ExpressionNode( build_cast( @$, $2, $4 ) ); }
 	| '(' aggregate_control '&' ')' cast_expression		// CFA
-		{ $$ = new ExpressionNode( build_keyword_cast( yylloc, $2, $5 ) ); }
+		{ $$ = new ExpressionNode( build_keyword_cast( @$, $2, $5 ) ); }
 	| '(' aggregate_control '*' ')' cast_expression		// CFA
-		{ $$ = new ExpressionNode( build_keyword_cast( yylloc, $2, $5 ) ); }
+		{ $$ = new ExpressionNode( build_keyword_cast( @$, $2, $5 ) ); }
 	| '(' VIRTUAL ')' cast_expression					// CFA
-		{ $$ = new ExpressionNode( new ast::VirtualCastExpr( yylloc, maybeMoveBuild( $4 ), nullptr ) ); }
+		{ $$ = new ExpressionNode( new ast::VirtualCastExpr( @$, maybeMoveBuild( $4 ), nullptr ) ); }
 	| '(' VIRTUAL type_no_function ')' cast_expression	// CFA
-		{ $$ = new ExpressionNode( new ast::VirtualCastExpr( yylloc, maybeMoveBuild( $5 ), maybeMoveBuildType( $3 ) ) ); }
+		{ $$ = new ExpressionNode( new ast::VirtualCastExpr( @$, maybeMoveBuild( $5 ), maybeMoveBuildType( $3 ) ) ); }
 	| '(' RETURN type_no_function ')' cast_expression	// CFA (ASCRIPTION)
-		{ $$ = new ExpressionNode( build_cast( yylloc, $3, $5, ast::ReturnCast ) ); }
+		{ $$ = new ExpressionNode( build_cast( @$, $3, $5, ast::ReturnCast ) ); }
 	| '(' COERCE type_no_function ')' cast_expression	// CFA (COERCION)
-		{ SemanticError( yylloc, "Coerce cast is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "Coerce cast is currently unimplemented." ); $$ = nullptr; }
 	| '(' qualifier_cast_list ')' cast_expression		// CFA, (modify CVs of cast_expression)
-		{ SemanticError( yylloc, "Qualifier cast is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "Qualifier cast is currently unimplemented." ); $$ = nullptr; }
 //	| '(' type_no_function ')' tuple
-//		{ $$ = new ast::ExpressionNode( build_cast( yylloc, $2, $4 ) ); }
+//		{ $$ = new ast::ExpressionNode( build_cast( @$, $2, $4 ) ); }
 	;
 
 qualifier_cast_list:
@@ -1015,91 +1060,91 @@ cast_modifier:
 exponential_expression:
 	cast_expression
 	| exponential_expression '\\' cast_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::Exp, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::Exp, $1, $3 ) ); }
 	;
 
 multiplicative_expression:
 	exponential_expression
 	| multiplicative_expression '*' exponential_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::Mul, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::Mul, $1, $3 ) ); }
 	| multiplicative_expression '/' exponential_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::Div, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::Div, $1, $3 ) ); }
 	| multiplicative_expression '%' exponential_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::Mod, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::Mod, $1, $3 ) ); }
 	;
 
 additive_expression:
 	multiplicative_expression
 	| additive_expression '+' multiplicative_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::Plus, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::Plus, $1, $3 ) ); }
 	| additive_expression '-' multiplicative_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::Minus, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::Minus, $1, $3 ) ); }
 	;
 
 shift_expression:
 	additive_expression
 	| shift_expression LS additive_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::LShift, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::LShift, $1, $3 ) ); }
 	| shift_expression RS additive_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::RShift, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::RShift, $1, $3 ) ); }
 	;
 
 relational_expression:
 	shift_expression
 	| relational_expression '<' shift_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::LThan, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::LThan, $1, $3 ) ); }
 	| relational_expression '>' shift_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::GThan, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::GThan, $1, $3 ) ); }
 	| relational_expression LE shift_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::LEThan, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::LEThan, $1, $3 ) ); }
 	| relational_expression GE shift_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::GEThan, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::GEThan, $1, $3 ) ); }
 	;
 
 equality_expression:
 	relational_expression
 	| equality_expression EQ relational_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::Eq, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::Eq, $1, $3 ) ); }
 	| equality_expression NE relational_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::Neq, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::Neq, $1, $3 ) ); }
 	;
 
 AND_expression:
 	equality_expression
 	| AND_expression '&' equality_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::BitAnd, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::BitAnd, $1, $3 ) ); }
 	;
 
 exclusive_OR_expression:
 	AND_expression
 	| exclusive_OR_expression '^' AND_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::Xor, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::Xor, $1, $3 ) ); }
 	;
 
 inclusive_OR_expression:
 	exclusive_OR_expression
 	| inclusive_OR_expression '|' exclusive_OR_expression
-		{ $$ = new ExpressionNode( build_binary_val( yylloc, OperKinds::BitOr, $1, $3 ) ); }
+		{ $$ = new ExpressionNode( build_binary_val( @$, OperKinds::BitOr, $1, $3 ) ); }
 	;
 
 logical_AND_expression:
 	inclusive_OR_expression
 	| logical_AND_expression ANDAND inclusive_OR_expression
-		{ $$ = new ExpressionNode( build_and_or( yylloc, $1, $3, ast::AndExpr ) ); }
+		{ $$ = new ExpressionNode( build_and_or( @$, $1, $3, ast::AndExpr ) ); }
 	;
 
 logical_OR_expression:
 	logical_AND_expression
 	| logical_OR_expression OROR logical_AND_expression
-		{ $$ = new ExpressionNode( build_and_or( yylloc, $1, $3, ast::OrExpr ) ); }
+		{ $$ = new ExpressionNode( build_and_or( @$, $1, $3, ast::OrExpr ) ); }
 	;
 
 conditional_expression:
 	logical_OR_expression
 	| logical_OR_expression '?' comma_expression ':' conditional_expression
-		{ $$ = new ExpressionNode( build_cond( yylloc, $1, $3, $5 ) ); }
+		{ $$ = new ExpressionNode( build_cond( @$, $1, $3, $5 ) ); }
 	| logical_OR_expression '?' /* empty */ ':' conditional_expression // GCC, omitted first operand
-		{ $$ = new ExpressionNode( build_cond( yylloc, $1, nullptr, $4 ) ); }
+		{ $$ = new ExpressionNode( build_cond( @$, $1, nullptr, $4 ) ); }
 	;
 
 constant_expression:
@@ -1121,10 +1166,10 @@ argument_expression_list:
 
 argument_expression:
 	'?'													// CFA, default parameter
-		// { SemanticError( yylloc, "Argument to default parameter is currently unimplemented." ); $$ = nullptr; }
-		{ $$ = new ExpressionNode( build_constantInteger( yylloc, *new string( "2" ) ) ); }
+		// { SemanticError( @$, "Argument to default parameter is currently unimplemented." ); $$ = nullptr; }
+		{ $$ = new ExpressionNode( build_constantInteger( @$, *new string( "2" ) ) ); }
 	| '?' identifier '=' assignment_expression			// CFA, keyword argument
-		// { SemanticError( yylloc, "keyword argument is currently unimplemented." ); $$ = nullptr; }
+		// { SemanticError( @$, "keyword argument is currently unimplemented." ); $$ = nullptr; }
 		{ $$ = $4; }
 	| assignment_expression
 	;
@@ -1135,13 +1180,13 @@ assignment_expression:
 	| unary_expression assignment_operator assignment_expression
 		{
 //			if ( $2 == OperKinds::AtAssn ) {
-//				SemanticError( yylloc, "C @= assignment is currently unimplemented." ); $$ = nullptr;
+//				SemanticError( @$, "C @= assignment is currently unimplemented." ); $$ = nullptr;
 //			} else {
-				$$ = new ExpressionNode( build_binary_val( yylloc, $2, $1, $3 ) );
+				$$ = new ExpressionNode( build_binary_val( @$, $2, $1, $3 ) );
 //			} // if
 		}
 	| unary_expression '=' '{' initializer_list_opt comma_opt '}'
-		{ SemanticError( yylloc, "Initializer assignment is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "Initializer assignment is currently unimplemented." ); $$ = nullptr; }
 	;
 
 assignment_expression_opt:
@@ -1178,32 +1223,32 @@ tuple:													// CFA, tuple
 		// CFA, one assignment_expression is factored out of comma_expression to eliminate a shift/reduce conflict with
 		// comma_expression in cfa_identifier_parameter_array and cfa_abstract_array
 	'[' ',' ']'
-		// { $$ = new ExpressionNode( build_tuple( yylloc, nullptr ) ); }
-		{ SemanticError( yylloc, "Empty tuple is meaningless." ); $$ = nullptr; }
+		// { $$ = new ExpressionNode( build_tuple( @$, nullptr ) ); }
+		{ SemanticError( @$, "Empty tuple is meaningless." ); $$ = nullptr; }
 	| '[' assignment_expression ',' ']'
-		{ $$ = new ExpressionNode( build_tuple( yylloc, $2 ) ); }
+		{ $$ = new ExpressionNode( build_tuple( @$, $2 ) ); }
 	| '[' '@' comma_opt ']'
-		{ SemanticError( yylloc, "Eliding tuple element with '@' is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "Eliding tuple element with '@' is currently unimplemented." ); $$ = nullptr; }
 	| '[' assignment_expression ',' tuple_expression_list comma_opt ']'
-	 	{ $$ = new ExpressionNode( build_tuple( yylloc, $2->set_last( $4 ) ) ); }
+	 	{ $$ = new ExpressionNode( build_tuple( @$, $2->set_last( $4 ) ) ); }
 	| '[' '@' ',' tuple_expression_list comma_opt ']'
-		{ SemanticError( yylloc, "Eliding tuple element with '@' is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "Eliding tuple element with '@' is currently unimplemented." ); $$ = nullptr; }
 	;
 
 tuple_expression_list:
 	assignment_expression
 	| '@'												// CFA
-		{ SemanticError( yylloc, "Eliding tuple element with '@' is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "Eliding tuple element with '@' is currently unimplemented." ); $$ = nullptr; }
 	| tuple_expression_list ',' assignment_expression
 		{ $$ = $1->set_last( $3 ); }
 	| tuple_expression_list ',' '@'
-		{ SemanticError( yylloc, "Eliding tuple element with '@' is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "Eliding tuple element with '@' is currently unimplemented." ); $$ = nullptr; }
 	;
 
 comma_expression:
 	assignment_expression
 	| comma_expression ',' assignment_expression
-		{ $$ = new ExpressionNode( new ast::CommaExpr( yylloc, maybeMoveBuild( $1 ), maybeMoveBuild( $3 ) ) ); }
+		{ $$ = new ExpressionNode( new ast::CommaExpr( @$, maybeMoveBuild( $1 ), maybeMoveBuild( $3 ) ) ); }
 	;
 
 comma_expression_opt:
@@ -1229,19 +1274,19 @@ statement:
 	| cofor_statement
 	| exception_statement
 	| enable_disable_statement
-		{ SemanticError( yylloc, "enable/disable statement is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "enable/disable statement is currently unimplemented." ); $$ = nullptr; }
 	| asm_statement
 	| DIRECTIVE
-		{ $$ = new StatementNode( build_directive( yylloc, $1 ) ); }
+		{ $$ = new StatementNode( build_directive( @$, $1 ) ); }
 	;
 
 labelled_statement:
 		// labels cannot be identifiers 0 or 1
 	identifier_or_type_name ':' attribute_list_opt statement
-		{ $$ = $4->add_label( yylloc, $1, $3 ); }
+		{ $$ = $4->add_label( @$, $1, $3 ); }
 	| identifier_or_type_name ':' attribute_list_opt error // invalid syntax rule
 		{
-			SemanticError( yylloc, "syntx error, label \"%s\" must be associated with a statement, "
+			SemanticError( @$, "syntx error, label \"%s\" must be associated with a statement, "
 						   "where a declaration, case, or default is not a statement.\n"
 						   "Move the label or terminate with a semicolon.", $1.str->c_str() );
 			$$ = nullptr;
@@ -1250,12 +1295,12 @@ labelled_statement:
 
 compound_statement:
 	'{' '}'
-		{ $$ = new StatementNode( build_compound( yylloc, (StatementNode *)0 ) ); }
+		{ $$ = new StatementNode( build_compound( @$, (StatementNode *)0 ) ); }
 	| '{' push
 	  local_label_declaration_opt						// GCC, local labels appear at start of block
 	  statement_decl_list								// C99, intermix declarations and statements
 	  pop '}'
-		{ $$ = new StatementNode( build_compound( yylloc, $4 ) ); }
+		{ $$ = new StatementNode( build_compound( @$, $4 ) ); }
 	;
 
 statement_decl_list:									// C99
@@ -1270,9 +1315,9 @@ statement_decl:
 	| attribute_list_opt EXTENSION declaration			// GCC
 		{ distAttr( $1, $3 ); distExt( $3 ); $$ = new StatementNode( $3 ); }
 	| attribute_list_opt function_definition
-		{ distAttr( $1, $2 ); $$ = new StatementNode( $2 ); }
+		{ distAttr( $1, $2 ); $$ = new StatementNode( setExtent( $2, @2 ) ); }
 	| attribute_list_opt EXTENSION function_definition	// GCC
-		{ distAttr( $1, $3 ); distExt( $3 ); $$ = new StatementNode( $3 ); }
+		{ distAttr( $1, $3 ); distExt( $3 ); $$ = new StatementNode( setExtent( $3, @3 ) ); }
 	| attribute_list_opt statement						// FIX ME!
 		{ $$ = $2->addQualifiers( $1 ); }
 	;
@@ -1283,13 +1328,13 @@ statement_list_nodecl:
 	| statement_list_nodecl attribute_list_opt statement
 		{ assert( $1 ); $1->set_last( $3->addQualifiers( $2 ) ); $$ = $1; }	// FIX ME!
 	| statement_list_nodecl error						// invalid syntax rule
-		{ SemanticError( yylloc, "illegal syntax, declarations only allowed at the start of the switch body,"
+		{ SemanticError( @$, "illegal syntax, declarations only allowed at the start of the switch body,"
 						 " i.e., after the '{'." ); $$ = nullptr; }
 	;
 
 expression_statement:									// expression or null statement
 	comma_expression_opt ';'
-		{ $$ = new StatementNode( build_expr( yylloc, $1 ) ); }
+		{ $$ = new StatementNode( build_expr( @$, $1 ) ); }
 	;
 
 // "if", "switch", and "choose" require parenthesis around the conditional. See the following ambiguities without
@@ -1319,32 +1364,32 @@ expression_statement:									// expression or null statement
 selection_statement:
 	IF '(' conditional_declaration ')' statement		%prec THEN
 		// explicitly deal with the shift/reduce conflict on if/else
-		{ $$ = new StatementNode( build_if( yylloc, $3, maybe_build_compound( yylloc, $5 ), nullptr ) ); }
+		{ $$ = new StatementNode( build_if( @$, $3, maybe_build_compound( @$, $5 ), nullptr ) ); }
 	| IF '(' conditional_declaration ')' statement ELSE statement
-		{ $$ = new StatementNode( build_if( yylloc, $3, maybe_build_compound( yylloc, $5 ), maybe_build_compound( yylloc, $7 ) ) ); }
+		{ $$ = new StatementNode( build_if( @$, $3, maybe_build_compound( @$, $5 ), maybe_build_compound( @$, $7 ) ) ); }
 	| SWITCH '(' comma_expression ')' case_clause
-		{ $$ = new StatementNode( build_switch( yylloc, true, $3, $5 ) ); }
+		{ $$ = new StatementNode( build_switch( @$, true, $3, $5 ) ); }
 	| SWITCH '(' comma_expression ')' '{' push declaration_list_opt switch_clause_list_opt pop '}' // CFA
 		{
-			StatementNode *sw = new StatementNode( build_switch( yylloc, true, $3, $8 ) );
+			StatementNode *sw = new StatementNode( build_switch( @$, true, $3, $8 ) );
 			// The semantics of the declaration list is changed to include associated initialization, which is performed
 			// *before* the transfer to the appropriate case clause by hoisting the declarations into a compound
 			// statement around the switch.  Statements after the initial declaration list can never be executed, and
 			// therefore, are removed from the grammar even though C allows it. The change also applies to choose
 			// statement.
-			$$ = $7 ? new StatementNode( build_compound( yylloc, (new StatementNode( $7 ))->set_last( sw ) ) ) : sw;
+			$$ = $7 ? new StatementNode( build_compound( @$, (new StatementNode( $7 ))->set_last( sw ) ) ) : sw;
 		}
 	| SWITCH '(' comma_expression ')' '{' error '}'		// CFA, invalid syntax rule error
-		{ SemanticError( yylloc, "synatx error, declarations can only appear before the list of case clauses." ); $$ = nullptr; }
+		{ SemanticError( @$, "synatx error, declarations can only appear before the list of case clauses." ); $$ = nullptr; }
 	| CHOOSE '(' comma_expression ')' case_clause		// CFA
-		{ $$ = new StatementNode( build_switch( yylloc, false, $3, $5 ) ); }
+		{ $$ = new StatementNode( build_switch( @$, false, $3, $5 ) ); }
 	| CHOOSE '(' comma_expression ')' '{' push declaration_list_opt switch_clause_list_opt pop '}' // CFA
 		{
-			StatementNode *sw = new StatementNode( build_switch( yylloc, false, $3, $8 ) );
-			$$ = $7 ? new StatementNode( build_compound( yylloc, (new StatementNode( $7 ))->set_last( sw ) ) ) : sw;
+			StatementNode *sw = new StatementNode( build_switch( @$, false, $3, $8 ) );
+			$$ = $7 ? new StatementNode( build_compound( @$, (new StatementNode( $7 ))->set_last( sw ) ) ) : sw;
 		}
 	| CHOOSE '(' comma_expression ')' '{' error '}'		// CFA, invalid syntax rule
-		{ SemanticError( yylloc, "illegal syntax, declarations can only appear before the list of case clauses." ); $$ = nullptr; }
+		{ SemanticError( @$, "illegal syntax, declarations can only appear before the list of case clauses." ); $$ = nullptr; }
 	;
 
 conditional_declaration:
@@ -1364,26 +1409,26 @@ conditional_declaration:
 case_value:												// CFA
 	constant_expression							{ $$ = $1; }
 	| constant_expression ELLIPSIS constant_expression	// GCC, subrange
-		{ $$ = new ExpressionNode( new ast::RangeExpr( yylloc, maybeMoveBuild( $1 ), maybeMoveBuild( $3 ) ) ); }
+		{ $$ = new ExpressionNode( new ast::RangeExpr( @$, maybeMoveBuild( $1 ), maybeMoveBuild( $3 ) ) ); }
 	| subrange											// CFA, subrange
 	;
 
 case_value_list:										// CFA
-	case_value									{ $$ = new ClauseNode( build_case( yylloc, $1 ) ); }
+	case_value									{ $$ = new ClauseNode( build_case( @$, $1 ) ); }
 		// convert case list, e.g., "case 1, 3, 5:" into "case 1: case 3: case 5"
-	| case_value_list ',' case_value			{ $$ = $1->set_last( new ClauseNode( build_case( yylloc, $3 ) ) ); }
+	| case_value_list ',' case_value			{ $$ = $1->set_last( new ClauseNode( build_case( @$, $3 ) ) ); }
 	;
 
 case_label:												// CFA
 	CASE error											// invalid syntax rule
-		{ SemanticError( yylloc, "illegal syntax, case list missing after case." ); $$ = nullptr; }
+		{ SemanticError( @$, "illegal syntax, case list missing after case." ); $$ = nullptr; }
 	| CASE case_value_list ':'					{ $$ = $2; }
 	| CASE case_value_list error						// invalid syntax rule
-		{ SemanticError( yylloc, "illegal syntax, colon missing after case list." ); $$ = nullptr; }
-	| DEFAULT ':'								{ $$ = new ClauseNode( build_default( yylloc ) ); }
+		{ SemanticError( @$, "illegal syntax, colon missing after case list." ); $$ = nullptr; }
+	| DEFAULT ':'								{ $$ = new ClauseNode( build_default( @$ ) ); }
 		// A semantic check is required to ensure only one default clause per switch/choose statement.
 	| DEFAULT error										//  invalid syntax rule
-		{ SemanticError( yylloc, "illegal syntax, colon missing after default." ); $$ = nullptr; }
+		{ SemanticError( @$, "illegal syntax, colon missing after default." ); $$ = nullptr; }
 	;
 
 case_label_list:										// CFA
@@ -1392,7 +1437,7 @@ case_label_list:										// CFA
 	;
 
 case_clause:											// CFA
-	case_label_list statement					{ $$ = $1->append_last_case( maybe_build_compound( yylloc, $2 ) ); }
+	case_label_list statement					{ $$ = $1->append_last_case( maybe_build_compound( @$, $2 ) ); }
 	;
 
 switch_clause_list_opt:									// CFA
@@ -1403,45 +1448,45 @@ switch_clause_list_opt:									// CFA
 
 switch_clause_list:										// CFA
 	case_label_list statement_list_nodecl
-		{ $$ = $1->append_last_case( new StatementNode( build_compound( yylloc, $2 ) ) ); }
+		{ $$ = $1->append_last_case( new StatementNode( build_compound( @$, $2 ) ) ); }
 	| switch_clause_list case_label_list statement_list_nodecl
-		{ $$ = $1->set_last( $2->append_last_case( new StatementNode( build_compound( yylloc, $3 ) ) ) ); }
+		{ $$ = $1->set_last( $2->append_last_case( new StatementNode( build_compound( @$, $3 ) ) ) ); }
 	;
 
 iteration_statement:
 	WHILE '(' ')' statement								%prec THEN // CFA => while ( 1 )
-		{ $$ = new StatementNode( build_while( yylloc, new CondCtrl( nullptr, NEW_ONE ), maybe_build_compound( yylloc, $4 ) ) ); }
+		{ $$ = new StatementNode( build_while( @$, new CondCtrl( nullptr, NEW_ONE ), maybe_build_compound( @$, $4 ) ) ); }
 	| WHILE '(' ')' statement ELSE statement			// CFA
 		{
-			$$ = new StatementNode( build_while( yylloc, new CondCtrl( nullptr, NEW_ONE ), maybe_build_compound( yylloc, $4 ) ) );
-			SemanticWarning( yylloc, Warning::SuperfluousElse );
+			$$ = new StatementNode( build_while( @$, new CondCtrl( nullptr, NEW_ONE ), maybe_build_compound( @$, $4 ) ) );
+			SemanticWarning( @$, Warning::SuperfluousElse );
 		}
 	| WHILE '(' conditional_declaration ')' statement	%prec THEN
-		{ $$ = new StatementNode( build_while( yylloc, $3, maybe_build_compound( yylloc, $5 ) ) ); }
+		{ $$ = new StatementNode( build_while( @$, $3, maybe_build_compound( @$, $5 ) ) ); }
 	| WHILE '(' conditional_declaration ')' statement ELSE statement // CFA
-		{ $$ = new StatementNode( build_while( yylloc, $3, maybe_build_compound( yylloc, $5 ), maybe_build_compound( yylloc, $7 ) ) ); }
+		{ $$ = new StatementNode( build_while( @$, $3, maybe_build_compound( @$, $5 ), maybe_build_compound( @$, $7 ) ) ); }
 	| DO statement WHILE '(' ')' ';'					// CFA => do while( 1 )
-		{ $$ = new StatementNode( build_do_while( yylloc, NEW_ONE, maybe_build_compound( yylloc, $2 ) ) ); }
+		{ $$ = new StatementNode( build_do_while( @$, NEW_ONE, maybe_build_compound( @$, $2 ) ) ); }
 	| DO statement WHILE '(' ')' ELSE statement			// CFA
 		{
-			$$ = new StatementNode( build_do_while( yylloc, NEW_ONE, maybe_build_compound( yylloc, $2 ) ) );
-			SemanticWarning( yylloc, Warning::SuperfluousElse );
+			$$ = new StatementNode( build_do_while( @$, NEW_ONE, maybe_build_compound( @$, $2 ) ) );
+			SemanticWarning( @$, Warning::SuperfluousElse );
 		}
 	| DO statement WHILE '(' comma_expression ')' ';'
-		{ $$ = new StatementNode( build_do_while( yylloc, $5, maybe_build_compound( yylloc, $2 ) ) ); }
+		{ $$ = new StatementNode( build_do_while( @$, $5, maybe_build_compound( @$, $2 ) ) ); }
 	| DO statement WHILE '(' comma_expression ')' ELSE statement // CFA
-		{ $$ = new StatementNode( build_do_while( yylloc, $5, maybe_build_compound( yylloc, $2 ), maybe_build_compound( yylloc, $8 ) ) ); }
+		{ $$ = new StatementNode( build_do_while( @$, $5, maybe_build_compound( @$, $2 ), maybe_build_compound( @$, $8 ) ) ); }
 	| FOR '(' ')' statement								%prec THEN // CFA => for ( ;; )
-		{ $$ = new StatementNode( build_for( yylloc, new ForCtrl( nullptr, nullptr, nullptr ), maybe_build_compound( yylloc, $4 ) ) ); }
+		{ $$ = new StatementNode( build_for( @$, new ForCtrl( nullptr, nullptr, nullptr ), maybe_build_compound( @$, $4 ) ) ); }
 	| FOR '(' ')' statement ELSE statement				// CFA
 		{
-			$$ = new StatementNode( build_for( yylloc, new ForCtrl( nullptr, nullptr, nullptr ), maybe_build_compound( yylloc, $4 ) ) );
-			SemanticWarning( yylloc, Warning::SuperfluousElse );
+			$$ = new StatementNode( build_for( @$, new ForCtrl( nullptr, nullptr, nullptr ), maybe_build_compound( @$, $4 ) ) );
+			SemanticWarning( @$, Warning::SuperfluousElse );
 		}
 	| FOR '(' for_control_expression_list ')' statement	%prec THEN
-		{ $$ = new StatementNode( build_for( yylloc, $3, maybe_build_compound( yylloc, $5 ) ) ); }
+		{ $$ = new StatementNode( build_for( @$, $3, maybe_build_compound( @$, $5 ) ) ); }
 	| FOR '(' for_control_expression_list ')' statement ELSE statement // CFA
-		{ $$ = new StatementNode( build_for( yylloc, $3, maybe_build_compound( yylloc, $5 ), maybe_build_compound( yylloc, $7 ) ) ); }
+		{ $$ = new StatementNode( build_for( @$, $3, maybe_build_compound( @$, $5 ), maybe_build_compound( @$, $7 ) ) ); }
 	;
 
 for_control_expression_list:
@@ -1455,12 +1500,12 @@ for_control_expression_list:
 			$1->init->set_last( $3->init );
 			if ( $1->condition ) {
 				if ( $3->condition ) {
-					$1->condition->expr.reset( new ast::LogicalExpr( yylloc, $1->condition->expr.release(), $3->condition->expr.release(), ast::AndExpr ) );
+					$1->condition->expr.reset( new ast::LogicalExpr( @$, $1->condition->expr.release(), $3->condition->expr.release(), ast::AndExpr ) );
 				} // if
 			} else $1->condition = $3->condition;
 			if ( $1->change ) {
 				if ( $3->change ) {
-					$1->change->expr.reset( new ast::CommaExpr( yylloc, $1->change->expr.release(), $3->change->expr.release() ) );
+					$1->change->expr.reset( new ast::CommaExpr( @$, $1->change->expr.release(), $3->change->expr.release() ) );
 				} // if
 			} else $1->change = $3->change;
 			$$ = $1;
@@ -1472,7 +1517,7 @@ for_control_expression:
 		{ $$ = new ForCtrl( nullptr, $2, $4 ); }
 	| comma_expression ';' comma_expression_opt ';' comma_expression_opt
 		{
-			$$ = new ForCtrl( $1 ? new StatementNode( new ast::ExprStmt( yylloc, maybeMoveBuild( $1 ) ) ) : nullptr, $3, $5 );
+			$$ = new ForCtrl( $1 ? new StatementNode( new ast::ExprStmt( @$, maybeMoveBuild( $1 ) ) ) : nullptr, $3, $5 );
 		}
 	| declaration comma_expression_opt ';' comma_expression_opt // C99, declaration has ';'
 		{ $$ = new ForCtrl( new StatementNode( $1 ), $2, $4 ); }
@@ -1483,163 +1528,163 @@ for_control_expression:
 		{ $$ = new ForCtrl( nullptr, $3, $5 ); }
 
 	| comma_expression									// CFA, anonymous loop-index
-		{ $$ = forCtrl( yylloc, $1, new string( DeclarationNode::anonymous.newName() ), NEW_ZERO, OperKinds::LThan, $1->clone(), NEW_ONE ); }
+		{ $$ = forCtrl( @$, $1, new string( DeclarationNode::anonymous.newName() ), NEW_ZERO, OperKinds::LThan, $1->clone(), NEW_ONE ); }
 	| updown comma_expression							// CFA, anonymous loop-index
-		{ $$ = forCtrl( yylloc, $2, new string( DeclarationNode::anonymous.newName() ), UPDOWN( $1, NEW_ZERO, $2->clone() ), $1, UPDOWN( $1, $2->clone(), NEW_ZERO ), NEW_ONE ); }
+		{ $$ = forCtrl( @$, $2, new string( DeclarationNode::anonymous.newName() ), UPDOWN( $1, NEW_ZERO, $2->clone() ), $1, UPDOWN( $1, $2->clone(), NEW_ZERO ), NEW_ONE ); }
 
 	| comma_expression updownS comma_expression			// CFA, anonymous loop-index
-		{ $$ = forCtrl( yylloc, $1, new string( DeclarationNode::anonymous.newName() ), UPDOWN( $2, $1->clone(), $3 ), $2, UPDOWN( $2, $3->clone(), $1->clone() ), NEW_ONE ); }
+		{ $$ = forCtrl( @$, $1, new string( DeclarationNode::anonymous.newName() ), UPDOWN( $2, $1->clone(), $3 ), $2, UPDOWN( $2, $3->clone(), $1->clone() ), NEW_ONE ); }
 	| '@' updownS comma_expression						// CFA, anonymous loop-index
 		{
-			if ( $2 == OperKinds::LThan || $2 == OperKinds::LEThan ) { SemanticError( yylloc, MISSING_LOW ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $3, new string( DeclarationNode::anonymous.newName() ), $3->clone(), $2, nullptr, NEW_ONE );
+			if ( $2 == OperKinds::LThan || $2 == OperKinds::LEThan ) { SemanticError( @$, MISSING_LOW ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $3, new string( DeclarationNode::anonymous.newName() ), $3->clone(), $2, nullptr, NEW_ONE );
 		}
 	| comma_expression updownS '@'						// CFA, anonymous loop-index
 		{
-			if ( $2 == OperKinds::LThan || $2 == OperKinds::LEThan ) { SemanticError( yylloc, MISSING_ANON_FIELD ); $$ = nullptr; }
-			else { SemanticError( yylloc, MISSING_HIGH ); $$ = nullptr; }
+			if ( $2 == OperKinds::LThan || $2 == OperKinds::LEThan ) { SemanticError( @$, MISSING_ANON_FIELD ); $$ = nullptr; }
+			else { SemanticError( @$, MISSING_HIGH ); $$ = nullptr; }
 		}
 
 	| comma_expression updownS comma_expression '~' comma_expression // CFA, anonymous loop-index
-		{ $$ = forCtrl( yylloc, $1, new string( DeclarationNode::anonymous.newName() ), UPDOWN( $2, $1->clone(), $3 ), $2, UPDOWN( $2, $3->clone(), $1->clone() ), $5 ); }
+		{ $$ = forCtrl( @$, $1, new string( DeclarationNode::anonymous.newName() ), UPDOWN( $2, $1->clone(), $3 ), $2, UPDOWN( $2, $3->clone(), $1->clone() ), $5 ); }
 	| '@' updownS comma_expression '~' comma_expression // CFA, anonymous loop-index
 		{
-			if ( $2 == OperKinds::LThan || $2 == OperKinds::LEThan ) { SemanticError( yylloc, MISSING_LOW ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $3, new string( DeclarationNode::anonymous.newName() ), $3->clone(), $2, nullptr, $5 );
+			if ( $2 == OperKinds::LThan || $2 == OperKinds::LEThan ) { SemanticError( @$, MISSING_LOW ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $3, new string( DeclarationNode::anonymous.newName() ), $3->clone(), $2, nullptr, $5 );
 		}
 	| comma_expression updownS '@' '~' comma_expression // CFA, anonymous loop-index
 		{
-			if ( $2 == OperKinds::LThan || $2 == OperKinds::LEThan ) { SemanticError( yylloc, MISSING_ANON_FIELD ); $$ = nullptr; }
-			else { SemanticError( yylloc, MISSING_HIGH ); $$ = nullptr; }
+			if ( $2 == OperKinds::LThan || $2 == OperKinds::LEThan ) { SemanticError( @$, MISSING_ANON_FIELD ); $$ = nullptr; }
+			else { SemanticError( @$, MISSING_HIGH ); $$ = nullptr; }
 		}
 	| comma_expression updownS comma_expression '~' '@' // CFA, invalid syntax rule
-		{ SemanticError( yylloc, MISSING_ANON_FIELD ); $$ = nullptr; }
+		{ SemanticError( @$, MISSING_ANON_FIELD ); $$ = nullptr; }
 	| '@' updownS '@'									// CFA, invalid syntax rule
-		{ SemanticError( yylloc, MISSING_ANON_FIELD ); $$ = nullptr; }
+		{ SemanticError( @$, MISSING_ANON_FIELD ); $$ = nullptr; }
 	| '@' updownS comma_expression '~' '@'				// CFA, invalid syntax rule
-		{ SemanticError( yylloc, MISSING_ANON_FIELD ); $$ = nullptr; }
+		{ SemanticError( @$, MISSING_ANON_FIELD ); $$ = nullptr; }
 	| comma_expression updownS '@' '~' '@'				// CFA, invalid syntax rule
-		{ SemanticError( yylloc, MISSING_ANON_FIELD ); $$ = nullptr; }
+		{ SemanticError( @$, MISSING_ANON_FIELD ); $$ = nullptr; }
 	| '@' updownS '@' '~' '@'							// CFA, invalid syntax rule
-		{ SemanticError( yylloc, MISSING_ANON_FIELD ); $$ = nullptr; }
+		{ SemanticError( @$, MISSING_ANON_FIELD ); $$ = nullptr; }
 
 		// These rules accept a comma_expression for the initialization, when only an identifier is correct. Being
 		// permissive allows for a better error message from forCtrl.
 	| comma_expression ';' comma_expression				// CFA
-		{ $$ = forCtrl( yylloc, $3, $1, NEW_ZERO, OperKinds::LThan, $3->clone(), NEW_ONE ); }
+		{ $$ = forCtrl( @$, $3, $1, NEW_ZERO, OperKinds::LThan, $3->clone(), NEW_ONE ); }
 	| comma_expression ';' updown comma_expression // CFA
-		{ $$ = forCtrl( yylloc, $4, $1, UPDOWN( $3, NEW_ZERO, $4->clone() ), $3, UPDOWN( $3, $4->clone(), NEW_ZERO ), NEW_ONE ); }
+		{ $$ = forCtrl( @$, $4, $1, UPDOWN( $3, NEW_ZERO, $4->clone() ), $3, UPDOWN( $3, $4->clone(), NEW_ZERO ), NEW_ONE ); }
 
 	| comma_expression ';' comma_expression updownS comma_expression // CFA
-		{ $$ = forCtrl( yylloc, $3, $1, UPDOWN( $4, $3->clone(), $5 ), $4, UPDOWN( $4, $5->clone(), $3->clone() ), NEW_ONE ); }
+		{ $$ = forCtrl( @$, $3, $1, UPDOWN( $4, $3->clone(), $5 ), $4, UPDOWN( $4, $5->clone(), $3->clone() ), NEW_ONE ); }
 	| comma_expression ';' '@' updownS comma_expression // CFA
 		{
-			if ( $4 == OperKinds::LThan || $4 == OperKinds::LEThan ) { SemanticError( yylloc, MISSING_LOW ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $5, $1, $5->clone(), $4, nullptr, NEW_ONE );
+			if ( $4 == OperKinds::LThan || $4 == OperKinds::LEThan ) { SemanticError( @$, MISSING_LOW ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $5, $1, $5->clone(), $4, nullptr, NEW_ONE );
 		}
 	| comma_expression ';' comma_expression updownS '@' // CFA
 		{
-			if ( $4 == OperKinds::GThan || $4 == OperKinds::GEThan ) { SemanticError( yylloc, MISSING_HIGH ); $$ = nullptr; }
-			else if ( $4 == OperKinds::LEThan ) { SemanticError( yylloc, "illegal syntax, equality with missing high value is meaningless. Use \"~\"." ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $3, $1, $3->clone(), $4, nullptr, NEW_ONE );
+			if ( $4 == OperKinds::GThan || $4 == OperKinds::GEThan ) { SemanticError( @$, MISSING_HIGH ); $$ = nullptr; }
+			else if ( $4 == OperKinds::LEThan ) { SemanticError( @$, "illegal syntax, equality with missing high value is meaningless. Use \"~\"." ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $3, $1, $3->clone(), $4, nullptr, NEW_ONE );
 		}
 	| comma_expression ';' '@' updownS '@'				// CFA, invalid syntax rule
-		{ SemanticError( yylloc, "illegal syntax, missing low/high value for ascending/descending range so index is uninitialized." ); $$ = nullptr; }
+		{ SemanticError( @$, "illegal syntax, missing low/high value for ascending/descending range so index is uninitialized." ); $$ = nullptr; }
 
 	| comma_expression ';' comma_expression updownEq comma_expression // CFA
-		{ $$ = forCtrl( yylloc, $3, $1, UPDOWN( $4, $3->clone(), $5 ), $4, UPDOWN( $4, $5->clone(), $3->clone() ), NEW_ONE ); }
+		{ $$ = forCtrl( @$, $3, $1, UPDOWN( $4, $3->clone(), $5 ), $4, UPDOWN( $4, $5->clone(), $3->clone() ), NEW_ONE ); }
 
 	| comma_expression ';' comma_expression updownS comma_expression '~' comma_expression // CFA
-		{ $$ = forCtrl( yylloc, $3, $1, UPDOWN( $4, $3->clone(), $5 ), $4, UPDOWN( $4, $5->clone(), $3->clone() ), $7 ); }
+		{ $$ = forCtrl( @$, $3, $1, UPDOWN( $4, $3->clone(), $5 ), $4, UPDOWN( $4, $5->clone(), $3->clone() ), $7 ); }
 	| comma_expression ';' '@' updownS comma_expression '~' comma_expression // CFA, invalid syntax rule
 		{
-			if ( $4 == OperKinds::LThan || $4 == OperKinds::LEThan ) { SemanticError( yylloc, MISSING_LOW ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $5, $1, $5->clone(), $4, nullptr, $7 );
+			if ( $4 == OperKinds::LThan || $4 == OperKinds::LEThan ) { SemanticError( @$, MISSING_LOW ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $5, $1, $5->clone(), $4, nullptr, $7 );
 		}
 	| comma_expression ';' comma_expression updownS '@' '~' comma_expression // CFA
 		{
-			if ( $4 == OperKinds::GThan || $4 == OperKinds::GEThan ) { SemanticError( yylloc, MISSING_HIGH ); $$ = nullptr; }
-			else if ( $4 == OperKinds::LEThan ) { SemanticError( yylloc, "illegal syntax, equality with missing high value is meaningless. Use \"~\"." ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $3, $1, $3->clone(), $4, nullptr, $7 );
+			if ( $4 == OperKinds::GThan || $4 == OperKinds::GEThan ) { SemanticError( @$, MISSING_HIGH ); $$ = nullptr; }
+			else if ( $4 == OperKinds::LEThan ) { SemanticError( @$, "illegal syntax, equality with missing high value is meaningless. Use \"~\"." ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $3, $1, $3->clone(), $4, nullptr, $7 );
 		}
 	| comma_expression ';' comma_expression updownS comma_expression '~' '@' // CFA
-		{ $$ = forCtrl( yylloc, $3, $1, UPDOWN( $4, $3->clone(), $5 ), $4, UPDOWN( $4, $5->clone(), $3->clone() ), nullptr ); }
+		{ $$ = forCtrl( @$, $3, $1, UPDOWN( $4, $3->clone(), $5 ), $4, UPDOWN( $4, $5->clone(), $3->clone() ), nullptr ); }
 	| comma_expression ';' '@' updownS comma_expression '~' '@' // CFA, invalid syntax rule
 		{
-			if ( $4 == OperKinds::LThan || $4 == OperKinds::LEThan ) { SemanticError( yylloc, MISSING_LOW ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $5, $1, $5->clone(), $4, nullptr, nullptr );
+			if ( $4 == OperKinds::LThan || $4 == OperKinds::LEThan ) { SemanticError( @$, MISSING_LOW ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $5, $1, $5->clone(), $4, nullptr, nullptr );
 		}
 	| comma_expression ';' comma_expression updownS '@' '~' '@' // CFA
 		{
-			if ( $4 == OperKinds::GThan || $4 == OperKinds::GEThan ) { SemanticError( yylloc, MISSING_HIGH ); $$ = nullptr; }
-			else if ( $4 == OperKinds::LEThan ) { SemanticError( yylloc, "illegal syntax, equality with missing high value is meaningless. Use \"~\"." ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $3, $1, $3->clone(), $4, nullptr, nullptr );
+			if ( $4 == OperKinds::GThan || $4 == OperKinds::GEThan ) { SemanticError( @$, MISSING_HIGH ); $$ = nullptr; }
+			else if ( $4 == OperKinds::LEThan ) { SemanticError( @$, "illegal syntax, equality with missing high value is meaningless. Use \"~\"." ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $3, $1, $3->clone(), $4, nullptr, nullptr );
 		}
 	| comma_expression ';' '@' updownS '@' '~' '@'		// CFA
-		{ SemanticError( yylloc, "illegal syntax, missing low/high value for ascending/descending range so index is uninitialized." ); $$ = nullptr; }
+		{ SemanticError( @$, "illegal syntax, missing low/high value for ascending/descending range so index is uninitialized." ); $$ = nullptr; }
 
 	| declaration comma_expression						// CFA
-		{ $$ = forCtrl( yylloc, $1, NEW_ZERO, OperKinds::LThan, $2, NEW_ONE ); }
+		{ $$ = forCtrl( @$, $1, NEW_ZERO, OperKinds::LThan, $2, NEW_ONE ); }
 	| declaration updown comma_expression				// CFA
-		{ $$ = forCtrl( yylloc, $1, UPDOWN( $2, NEW_ZERO, $3 ), $2, UPDOWN( $2, $3->clone(), NEW_ZERO ), NEW_ONE ); }
+		{ $$ = forCtrl( @$, $1, UPDOWN( $2, NEW_ZERO, $3 ), $2, UPDOWN( $2, $3->clone(), NEW_ZERO ), NEW_ONE ); }
 
 	| declaration comma_expression updownS comma_expression // CFA
-		{ $$ = forCtrl( yylloc, $1, UPDOWN( $3, $2->clone(), $4 ), $3, UPDOWN( $3, $4->clone(), $2->clone() ), NEW_ONE ); }
+		{ $$ = forCtrl( @$, $1, UPDOWN( $3, $2->clone(), $4 ), $3, UPDOWN( $3, $4->clone(), $2->clone() ), NEW_ONE ); }
 	| declaration '@' updownS comma_expression			// CFA
 		{
-			if ( $3 == OperKinds::LThan || $3 == OperKinds::LEThan ) { SemanticError( yylloc, MISSING_LOW ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $1, $4, $3, nullptr, NEW_ONE );
+			if ( $3 == OperKinds::LThan || $3 == OperKinds::LEThan ) { SemanticError( @$, MISSING_LOW ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $1, $4, $3, nullptr, NEW_ONE );
 		}
 	| declaration comma_expression updownS '@'			// CFA
 		{
-			if ( $3 == OperKinds::GThan || $3 == OperKinds::GEThan ) { SemanticError( yylloc, MISSING_HIGH ); $$ = nullptr; }
-			else if ( $3 == OperKinds::LEThan ) { SemanticError( yylloc, "illegal syntax, equality with missing high value is meaningless. Use \"~\"." ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $1, $2, $3, nullptr, NEW_ONE );
+			if ( $3 == OperKinds::GThan || $3 == OperKinds::GEThan ) { SemanticError( @$, MISSING_HIGH ); $$ = nullptr; }
+			else if ( $3 == OperKinds::LEThan ) { SemanticError( @$, "illegal syntax, equality with missing high value is meaningless. Use \"~\"." ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $1, $2, $3, nullptr, NEW_ONE );
 		}
 
 	| declaration comma_expression updownEq comma_expression // CFA
-		{ $$ = forCtrl( yylloc, $1, UPDOWN( $3, $2->clone(), $4 ), $3, UPDOWN( $3, $4->clone(), $2->clone() ), NEW_ONE ); }
+		{ $$ = forCtrl( @$, $1, UPDOWN( $3, $2->clone(), $4 ), $3, UPDOWN( $3, $4->clone(), $2->clone() ), NEW_ONE ); }
 
 	| declaration comma_expression updownS comma_expression '~' comma_expression // CFA
-		{ $$ = forCtrl( yylloc, $1, UPDOWN( $3, $2, $4 ), $3, UPDOWN( $3, $4->clone(), $2->clone() ), $6 ); }
+		{ $$ = forCtrl( @$, $1, UPDOWN( $3, $2, $4 ), $3, UPDOWN( $3, $4->clone(), $2->clone() ), $6 ); }
 	| declaration '@' updownS comma_expression '~' comma_expression // CFA
 		{
-			if ( $3 == OperKinds::LThan || $3 == OperKinds::LEThan ) { SemanticError( yylloc, MISSING_LOW ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $1, $4, $3, nullptr, $6 );
+			if ( $3 == OperKinds::LThan || $3 == OperKinds::LEThan ) { SemanticError( @$, MISSING_LOW ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $1, $4, $3, nullptr, $6 );
 		}
 	| declaration comma_expression updownS '@' '~' comma_expression // CFA
 		{
-			if ( $3 == OperKinds::GThan || $3 == OperKinds::GEThan ) { SemanticError( yylloc, MISSING_HIGH ); $$ = nullptr; }
-			else if ( $3 == OperKinds::LEThan ) { SemanticError( yylloc, "illegal syntax, equality with missing high value is meaningless. Use \"~\"." ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $1, $2, $3, nullptr, $6 );
+			if ( $3 == OperKinds::GThan || $3 == OperKinds::GEThan ) { SemanticError( @$, MISSING_HIGH ); $$ = nullptr; }
+			else if ( $3 == OperKinds::LEThan ) { SemanticError( @$, "illegal syntax, equality with missing high value is meaningless. Use \"~\"." ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $1, $2, $3, nullptr, $6 );
 		}
 	| declaration comma_expression updownS comma_expression '~' '@' // CFA
-		{ $$ = forCtrl( yylloc, $1, UPDOWN( $3, $2, $4 ), $3, UPDOWN( $3, $4->clone(), $2->clone() ), nullptr ); }
+		{ $$ = forCtrl( @$, $1, UPDOWN( $3, $2, $4 ), $3, UPDOWN( $3, $4->clone(), $2->clone() ), nullptr ); }
 	| declaration '@' updownS comma_expression '~' '@'	// CFA
 		{
-			if ( $3 == OperKinds::LThan || $3 == OperKinds::LEThan ) { SemanticError( yylloc, MISSING_LOW ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $1, $4, $3, nullptr, nullptr );
+			if ( $3 == OperKinds::LThan || $3 == OperKinds::LEThan ) { SemanticError( @$, MISSING_LOW ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $1, $4, $3, nullptr, nullptr );
 		}
 	| declaration comma_expression updownS '@' '~' '@'	// CFA
 		{
-			if ( $3 == OperKinds::GThan || $3 == OperKinds::GEThan ) { SemanticError( yylloc, MISSING_HIGH ); $$ = nullptr; }
-			else if ( $3 == OperKinds::LEThan ) { SemanticError( yylloc, "illegal syntax, equality with missing high value is meaningless. Use \"~\"." ); $$ = nullptr; }
-			else $$ = forCtrl( yylloc, $1, $2, $3, nullptr, nullptr );
+			if ( $3 == OperKinds::GThan || $3 == OperKinds::GEThan ) { SemanticError( @$, MISSING_HIGH ); $$ = nullptr; }
+			else if ( $3 == OperKinds::LEThan ) { SemanticError( @$, "illegal syntax, equality with missing high value is meaningless. Use \"~\"." ); $$ = nullptr; }
+			else $$ = forCtrl( @$, $1, $2, $3, nullptr, nullptr );
 		}
 	| declaration '@' updownS '@' '~' '@'				// CFA, invalid syntax rule
-		{ SemanticError( yylloc, "illegal syntax, missing low/high value for ascending/descending range so index is uninitialized." ); $$ = nullptr; }
+		{ SemanticError( @$, "illegal syntax, missing low/high value for ascending/descending range so index is uninitialized." ); $$ = nullptr; }
 
 	| comma_expression ';' type_type_specifier			// CFA, enum type
 		{
-			$$ = enumRangeCtrl( $1, OperKinds::LEThan, new ExpressionNode( new ast::TypeExpr( yylloc, $3->clone()->buildType() ) ), $3 );
+			$$ = enumRangeCtrl( $1, OperKinds::LEThan, new ExpressionNode( new ast::TypeExpr( @$, $3->clone()->buildType() ) ), $3 );
 		}
 	| comma_expression ';' updown enum_key				// CFA, enum type, reverse direction
 		{
 			if ( $3 == OperKinds::GThan ) {
-				SemanticError( yylloc, "all enumeration ranges are equal (all values). Add an equal, e.g., ~=, -~=." ); $$ = nullptr;
+				SemanticError( @$, "all enumeration ranges are equal (all values). Add an equal, e.g., ~=, -~=." ); $$ = nullptr;
 				$3 = OperKinds::GEThan;
 			} // if
-			$$ = enumRangeCtrl( $1, $3, new ExpressionNode( new ast::TypeExpr( yylloc, $4->clone()->buildType() ) ), $4 );
+			$$ = enumRangeCtrl( $1, $3, new ExpressionNode( new ast::TypeExpr( @$, $4->clone()->buildType() ) ), $4 );
 		}
 	;
 
@@ -1694,67 +1739,67 @@ updownEq:
 
 jump_statement:
 	GOTO identifier_or_type_name ';'
-		{ $$ = new StatementNode( build_branch( yylloc, $2, ast::BranchStmt::Goto ) ); }
+		{ $$ = new StatementNode( build_branch( @$, $2, ast::BranchStmt::Goto ) ); }
 	| GOTO '*' comma_expression ';'						// GCC, computed goto
 		// The syntax for the GCC computed goto violates normal expression precedence, e.g., goto *i+3; => goto *(i+3);
 		// whereas normal operator precedence yields goto (*i)+3;
 		{ $$ = new StatementNode( build_computedgoto( $3 ) ); }
 		// A semantic check is required to ensure fallthrough appears only in the body of a choose statement.
 	| FALLTHROUGH ';'									// CFA
-		{ $$ = new StatementNode( build_branch( yylloc, ast::BranchStmt::FallThrough ) ); }
+		{ $$ = new StatementNode( build_branch( @$, ast::BranchStmt::FallThrough ) ); }
 	| FALLTHROUGH identifier_or_type_name ';'			// CFA
-		{ $$ = new StatementNode( build_branch( yylloc, $2, ast::BranchStmt::FallThrough ) ); }
+		{ $$ = new StatementNode( build_branch( @$, $2, ast::BranchStmt::FallThrough ) ); }
 	| FALLTHROUGH DEFAULT ';'							// CFA
-		{ $$ = new StatementNode( build_branch( yylloc, ast::BranchStmt::FallThroughDefault ) ); }
+		{ $$ = new StatementNode( build_branch( @$, ast::BranchStmt::FallThroughDefault ) ); }
 	| CONTINUE ';'
 		// A semantic check is required to ensure this statement appears only in the body of an iteration statement.
-		{ $$ = new StatementNode( build_branch( yylloc, ast::BranchStmt::Continue ) ); }
+		{ $$ = new StatementNode( build_branch( @$, ast::BranchStmt::Continue ) ); }
 	| CONTINUE identifier_or_type_name ';'				// CFA, multi-level continue
 		// A semantic check is required to ensure this statement appears only in the body of an iteration statement, and
 		// the target of the transfer appears only at the start of an iteration statement.
-		{ $$ = new StatementNode( build_branch( yylloc, $2, ast::BranchStmt::Continue ) ); }
+		{ $$ = new StatementNode( build_branch( @$, $2, ast::BranchStmt::Continue ) ); }
 	| BREAK ';'
 		// A semantic check is required to ensure this statement appears only in the body of an iteration statement.
-		{ $$ = new StatementNode( build_branch( yylloc, ast::BranchStmt::Break ) ); }
+		{ $$ = new StatementNode( build_branch( @$, ast::BranchStmt::Break ) ); }
 	| BREAK identifier_or_type_name ';'					// CFA, multi-level exit
 		// A semantic check is required to ensure this statement appears only in the body of an iteration statement, and
 		// the target of the transfer appears only at the start of an iteration statement.
-		{ $$ = new StatementNode( build_branch( yylloc, $2, ast::BranchStmt::Break ) ); }
+		{ $$ = new StatementNode( build_branch( @$, $2, ast::BranchStmt::Break ) ); }
 	| RETURN comma_expression_opt ';'
-		{ $$ = new StatementNode( build_return( yylloc, $2 ) ); }
+		{ $$ = new StatementNode( build_return( @$, $2 ) ); }
 	| RETURN '{' initializer_list_opt comma_opt '}' ';'
-		{ SemanticError( yylloc, "Initializer return is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "Initializer return is currently unimplemented." ); $$ = nullptr; }
 	| SUSPEND ';'
-		{ $$ = new StatementNode( build_suspend( yylloc, nullptr, ast::SuspendStmt::None ) ); }
+		{ $$ = new StatementNode( build_suspend( @$, nullptr, ast::SuspendStmt::None ) ); }
 	| SUSPEND compound_statement
-		{ $$ = new StatementNode( build_suspend( yylloc, $2, ast::SuspendStmt::None ) ); }
+		{ $$ = new StatementNode( build_suspend( @$, $2, ast::SuspendStmt::None ) ); }
 	| SUSPEND COROUTINE ';'
-		{ $$ = new StatementNode( build_suspend( yylloc, nullptr, ast::SuspendStmt::Coroutine ) ); }
+		{ $$ = new StatementNode( build_suspend( @$, nullptr, ast::SuspendStmt::Coroutine ) ); }
 	| SUSPEND COROUTINE compound_statement
-		{ $$ = new StatementNode( build_suspend( yylloc, $3, ast::SuspendStmt::Coroutine ) ); }
+		{ $$ = new StatementNode( build_suspend( @$, $3, ast::SuspendStmt::Coroutine ) ); }
 	| SUSPEND GENERATOR ';'
-		{ $$ = new StatementNode( build_suspend( yylloc, nullptr, ast::SuspendStmt::Generator ) ); }
+		{ $$ = new StatementNode( build_suspend( @$, nullptr, ast::SuspendStmt::Generator ) ); }
 	| SUSPEND GENERATOR compound_statement
-		{ $$ = new StatementNode( build_suspend( yylloc, $3, ast::SuspendStmt::Generator ) ); }
+		{ $$ = new StatementNode( build_suspend( @$, $3, ast::SuspendStmt::Generator ) ); }
 	| THROW assignment_expression_opt ';'				// handles rethrow
-		{ $$ = new StatementNode( build_throw( yylloc, $2 ) ); }
+		{ $$ = new StatementNode( build_throw( @$, $2 ) ); }
 	| THROWRESUME assignment_expression_opt ';'			// handles reresume
-		{ $$ = new StatementNode( build_resume( yylloc, $2 ) ); }
+		{ $$ = new StatementNode( build_resume( @$, $2 ) ); }
 	| THROWRESUME assignment_expression_opt AT assignment_expression ';' // handles reresume
 		{ $$ = new StatementNode( build_resume_at( $2, $4 ) ); }
 	;
 
 with_statement:
 	WITH '(' type_list ')' statement					// support scoped enumeration
-		{ $$ = new StatementNode( build_with( yylloc, $3, $5 ) ); }
+		{ $$ = new StatementNode( build_with( @$, $3, $5 ) ); }
 	;
 
 // If MUTEX becomes a general qualifier, there are shift/reduce conflicts, so possibly change syntax to "with mutex".
 mutex_statement:
 	MUTEX '(' argument_expression_list_opt ')' statement
 		{
-			if ( ! $3 ) { SemanticError( yylloc, "illegal syntax, mutex argument list cannot be empty." ); $$ = nullptr; }
-			$$ = new StatementNode( build_mutex( yylloc, $3, $5 ) );
+			if ( ! $3 ) { SemanticError( @$, "illegal syntax, mutex argument list cannot be empty." ); $$ = nullptr; }
+			$$ = new StatementNode( build_mutex( @$, $3, $5 ) );
 		}
 	;
 
@@ -1771,7 +1816,7 @@ when_clause_opt:
 cast_expression_list:
 	cast_expression
 	| cast_expression_list ',' cast_expression
-		{ SemanticError( yylloc, "List of mutex member is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "List of mutex member is currently unimplemented." ); $$ = nullptr; }
 	;
 
 timeout:
@@ -1792,18 +1837,18 @@ waitfor:
 wor_waitfor_clause:
 	when_clause_opt waitfor statement					%prec THEN
 		// Called first: create header for WaitForStmt.
-		{ $$ = build_waitfor( yylloc, new ast::WaitForStmt( yylloc ), $1, $2, maybe_build_compound( yylloc, $3 ) ); }
+		{ $$ = build_waitfor( @$, new ast::WaitForStmt( @$ ), $1, $2, maybe_build_compound( @$, $3 ) ); }
 	| wor_waitfor_clause wor when_clause_opt waitfor statement
-		{ $$ = build_waitfor( yylloc, $1, $3, $4, maybe_build_compound( yylloc, $5 ) ); }
+		{ $$ = build_waitfor( @$, $1, $3, $4, maybe_build_compound( @$, $5 ) ); }
 	| wor_waitfor_clause wor when_clause_opt ELSE statement
-		{ $$ = build_waitfor_else( yylloc, $1, $3, maybe_build_compound( yylloc, $5 ) ); }
+		{ $$ = build_waitfor_else( @$, $1, $3, maybe_build_compound( @$, $5 ) ); }
 	| wor_waitfor_clause wor when_clause_opt timeout statement	%prec THEN
-		{ $$ = build_waitfor_timeout( yylloc, $1, $3, $4, maybe_build_compound( yylloc, $5 ) ); }
+		{ $$ = build_waitfor_timeout( @$, $1, $3, $4, maybe_build_compound( @$, $5 ) ); }
 	// "else" must be conditional after timeout or timeout is never triggered (i.e., it is meaningless)
 	| wor_waitfor_clause wor when_clause_opt timeout statement wor ELSE statement // invalid syntax rule
-		{ SemanticError( yylloc, "illegal syntax, else clause must be conditional after timeout or timeout never triggered." ); $$ = nullptr; }
+		{ SemanticError( @$, "illegal syntax, else clause must be conditional after timeout or timeout never triggered." ); $$ = nullptr; }
 	| wor_waitfor_clause wor when_clause_opt timeout statement wor when_clause ELSE statement
-		{ $$ = build_waitfor_else( yylloc, build_waitfor_timeout( yylloc, $1, $3, $4, maybe_build_compound( yylloc, $5 ) ), $7, maybe_build_compound( yylloc, $9 ) ); }
+		{ $$ = build_waitfor_else( @$, build_waitfor_timeout( @$, $1, $3, $4, maybe_build_compound( @$, $5 ) ), $7, maybe_build_compound( @$, $9 ) ); }
 	;
 
 waitfor_statement:
@@ -1823,7 +1868,7 @@ waituntil:
 
 waituntil_clause:
 	when_clause_opt waituntil statement
-		{ $$ = build_waituntil_clause( yylloc, $1, $2, maybe_build_compound( yylloc, $3 ) ); }
+		{ $$ = build_waituntil_clause( @$, $1, $2, maybe_build_compound( @$, $3 ) ); }
 	| '(' wor_waituntil_clause ')'
 		{ $$ = $2; }
 	;
@@ -1841,38 +1886,38 @@ wor_waituntil_clause:
 	| wor_waituntil_clause wor wand_waituntil_clause
 		{ $$ = new ast::WaitUntilStmt::ClauseNode( ast::WaitUntilStmt::ClauseNode::Op::OR, $1, $3 ); }
 	| wor_waituntil_clause wor when_clause_opt ELSE statement
-		{ $$ = new ast::WaitUntilStmt::ClauseNode( ast::WaitUntilStmt::ClauseNode::Op::LEFT_OR, $1, build_waituntil_else( yylloc, $3, maybe_build_compound( yylloc, $5 ) ) ); }
+		{ $$ = new ast::WaitUntilStmt::ClauseNode( ast::WaitUntilStmt::ClauseNode::Op::LEFT_OR, $1, build_waituntil_else( @$, $3, maybe_build_compound( @$, $5 ) ) ); }
 	;
 
 waituntil_statement:
 	wor_waituntil_clause								%prec THEN
-		{ $$ = new StatementNode( build_waituntil_stmt( yylloc, $1 ) );	}
+		{ $$ = new StatementNode( build_waituntil_stmt( @$, $1 ) );	}
 	;
 
 corun_statement:
 	CORUN statement
-		{ $$ = new StatementNode( build_corun( yylloc, $2 ) ); }
+		{ $$ = new StatementNode( build_corun( @$, $2 ) ); }
 	;
 
 cofor_statement:
 	COFOR '(' for_control_expression_list ')' statement
-		{ $$ = new StatementNode( build_cofor( yylloc, $3, maybe_build_compound( yylloc, $5 ) ) ); }
+		{ $$ = new StatementNode( build_cofor( @$, $3, maybe_build_compound( @$, $5 ) ) ); }
 	;
 
 exception_statement:
 	TRY compound_statement handler_clause					%prec THEN
-		{ $$ = new StatementNode( build_try( yylloc, $2, $3, nullptr ) ); }
+		{ $$ = new StatementNode( build_try( @$, $2, $3, nullptr ) ); }
 	| TRY compound_statement finally_clause
-		{ $$ = new StatementNode( build_try( yylloc, $2, nullptr, $3 ) ); }
+		{ $$ = new StatementNode( build_try( @$, $2, nullptr, $3 ) ); }
 	| TRY compound_statement handler_clause finally_clause
-		{ $$ = new StatementNode( build_try( yylloc, $2, $3, $4 ) ); }
+		{ $$ = new StatementNode( build_try( @$, $2, $3, $4 ) ); }
 	;
 
 handler_clause:
 	handler_key '(' exception_declaration handler_predicate_opt ')' compound_statement
-		{ $$ = new ClauseNode( build_catch( yylloc, $1, $3, $4, $6 ) ); }
+		{ $$ = new ClauseNode( build_catch( @$, $1, $3, $4, $6 ) ); }
 	| handler_clause handler_key '(' exception_declaration handler_predicate_opt ')' compound_statement
-		{ $$ = $1->set_last( new ClauseNode( build_catch( yylloc, $2, $4, $5, $7 ) ) ); }
+		{ $$ = $1->set_last( new ClauseNode( build_catch( @$, $2, $4, $5, $7 ) ) ); }
 	;
 
 handler_predicate_opt:
@@ -1889,7 +1934,7 @@ handler_key:
 	;
 
 finally_clause:
-	FINALLY compound_statement					{ $$ = new ClauseNode( build_finally( yylloc, $2 ) ); }
+	FINALLY compound_statement					{ $$ = new ClauseNode( build_finally( @$, $2 ) ); }
 	;
 
 exception_declaration:
@@ -1900,7 +1945,7 @@ exception_declaration:
 	| type_specifier_nobody variable_abstract_declarator
 		{ $$ = $2->addType( $1 ); }
 	| cfa_abstract_declarator_tuple identifier			// CFA
-		{ $$ = $1->addName( $2 ); }
+		{ $$ = setNameLoc( $1->addName( $2 ), @2 ); }
 	| cfa_abstract_declarator_tuple						// CFA
 	;
 
@@ -1915,15 +1960,15 @@ enable_disable_key:
 
 asm_statement:
 	ASM asm_volatile_opt '(' string_literal ')' ';'
-		{ $$ = new StatementNode( build_asm( yylloc, $2, $4, nullptr ) ); }
+		{ $$ = new StatementNode( build_asm( @$, $2, $4, nullptr ) ); }
 	| ASM asm_volatile_opt '(' string_literal ':' asm_operands_opt ')' ';' // remaining GCC
-		{ $$ = new StatementNode( build_asm( yylloc, $2, $4, $6 ) ); }
+		{ $$ = new StatementNode( build_asm( @$, $2, $4, $6 ) ); }
 	| ASM asm_volatile_opt '(' string_literal ':' asm_operands_opt ':' asm_operands_opt ')' ';'
-		{ $$ = new StatementNode( build_asm( yylloc, $2, $4, $6, $8 ) ); }
+		{ $$ = new StatementNode( build_asm( @$, $2, $4, $6, $8 ) ); }
 	| ASM asm_volatile_opt '(' string_literal ':' asm_operands_opt ':' asm_operands_opt ':' asm_clobbers_list_opt ')' ';'
-		{ $$ = new StatementNode( build_asm( yylloc, $2, $4, $6, $8, $10 ) ); }
+		{ $$ = new StatementNode( build_asm( @$, $2, $4, $6, $8, $10 ) ); }
 	| ASM asm_volatile_opt GOTO '(' string_literal ':' ':' asm_operands_opt ':' asm_clobbers_list_opt ':' asm_label_list ')' ';'
-		{ $$ = new StatementNode( build_asm( yylloc, $2, $5, nullptr, $8, $10, $12 ) ); }
+		{ $$ = new StatementNode( build_asm( @$, $2, $5, nullptr, $8, $10, $12 ) ); }
 	;
 
 asm_volatile_opt:										// GCC
@@ -1947,10 +1992,10 @@ asm_operands_list:										// GCC
 
 asm_operand:											// GCC
 	string_literal '(' constant_expression ')'
-		{ $$ = new ExpressionNode( new ast::AsmExpr( yylloc, "", maybeMoveBuild( $1 ), maybeMoveBuild( $3 ) ) ); }
+		{ $$ = new ExpressionNode( new ast::AsmExpr( @$, "", maybeMoveBuild( $1 ), maybeMoveBuild( $3 ) ) ); }
 	| '[' IDENTIFIER ']' string_literal '(' constant_expression ')'
 		{
-			$$ = new ExpressionNode( new ast::AsmExpr( yylloc, *$2.str, maybeMoveBuild( $4 ), maybeMoveBuild( $6 ) ) );
+			$$ = new ExpressionNode( new ast::AsmExpr( @$, *$2.str, maybeMoveBuild( $4 ), maybeMoveBuild( $6 ) ) );
 			delete $2.str;
 		}
 	;
@@ -1966,9 +2011,9 @@ asm_clobbers_list_opt:									// GCC
 
 asm_label_list:
 	identifier_or_type_name
-		{ $$ = new LabelNode(); $$->labels.emplace_back( yylloc, *$1 ); delete $1; } // allocated by lexer
+		{ $$ = new LabelNode(); $$->labels.emplace_back( @$, *$1 ); delete $1; } // allocated by lexer
 	| asm_label_list ',' identifier_or_type_name
-		{ $$ = $1; $1->labels.emplace_back( yylloc, *$3 ); delete $3; }	// allocated by lexer
+		{ $$ = $1; $1->labels.emplace_back( @$, *$3 ); delete $3; }	// allocated by lexer
 	;
 
 // ****************************** DECLARATIONS *********************************
@@ -2016,7 +2061,9 @@ local_label_list:										// GCC, local label
 
 declaration:											// old & new style declarations
 	c_declaration ';'
+		{ $$ = setExtent( $1, @$ ); }
 	| cfa_declaration ';'								// CFA
+		{ $$ = setExtent( $1, @$ ); }
 	| static_assert	';'									// C11
 	;
 
@@ -2024,7 +2071,7 @@ static_assert:
 	STATICASSERT '(' constant_expression ',' string_literal ')' // C11
 		{ $$ = DeclarationNode::newStaticAssert( $3, maybeMoveBuild( $5 ) ); }
 	| STATICASSERT '(' constant_expression ')'			// CFA
-		{ $$ = DeclarationNode::newStaticAssert( $3, build_constantStr( yylloc, *new string( "\"\"" ) ) ); }
+		{ $$ = DeclarationNode::newStaticAssert( $3, build_constantStr( @$, *new string( "\"\"" ) ) ); }
 
 // C declaration syntax is notoriously confusing and error prone. Cforall provides its own type, variable and function
 // declarations. CFA declarations use the same declaration tokens as in C; however, CFA places declaration modifiers to
@@ -2042,7 +2089,7 @@ cfa_declaration:										// CFA
 	| cfa_typedef_declaration
 	| cfa_function_declaration
 	| type_declaring_list
-		{ SemanticError( yylloc, "otype declaration is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "otype declaration is currently unimplemented." ); $$ = nullptr; }
 	| trait_specifier
 	;
 
@@ -2054,20 +2101,20 @@ cfa_variable_declaration:								// CFA
 		// them as a type_qualifier cannot appear in that context.
 		{ $$ = $2->addQualifiers( $1 )->addInitializer( $3 ); }
 	| cfa_variable_declaration pop ',' push identifier_or_type_name initializer_opt
-		{ $$ = $1->set_last( $1->cloneType( $5 )->addInitializer( $6 ) ); }
+		{ $$ = $1->set_last( setNameLoc( $1->cloneType( $5 ), @5 )->addInitializer( $6 ) ); }
 	;
 
 cfa_variable_specifier:									// CFA
 		// A semantic check is required to ensure asm_name only appears on declarations with implicit or explicit static
 		// storage-class
 	cfa_abstract_declarator_no_tuple identifier_or_type_name asm_name_opt
-		{ $$ = $1->addName( $2 )->addAsmName( $3 ); }
+		{ $$ = setNameLoc( $1->addName( $2 ), @2 )->addAsmName( $3 ); }
 	| cfa_abstract_tuple identifier_or_type_name asm_name_opt
-		{ $$ = $1->addName( $2 )->addAsmName( $3 ); }
+		{ $$ = setNameLoc( $1->addName( $2 ), @2 )->addAsmName( $3 ); }
  	| multi_array_dimension cfa_abstract_tuple identifier_or_type_name asm_name_opt
-		{ $$ = $2->addNewArray( $1 )->addName( $3 )->addAsmName( $4 ); }
+		{ $$ = setNameLoc( $2->addNewArray( $1 )->addName( $3 ), @3 )->addAsmName( $4 ); }
  	| multi_array_dimension type_qualifier_list cfa_abstract_tuple identifier_or_type_name asm_name_opt
-		{ $$ = $3->addNewArray( $1 )->addQualifiers( $2 )->addName( $4 )->addAsmName( $5 ); }
+		{ $$ = setNameLoc( $3->addNewArray( $1 )->addQualifiers( $2 )->addName( $4 ), @4 )->addAsmName( $5 ); }
 
 		// [ int s, int t ];			// declare s and t
 		// [ int, int ] f();
@@ -2075,9 +2122,9 @@ cfa_variable_specifier:									// CFA
 		// [ int x, int y ] = f();		// declare x and y, initialize each from f
 		// g( x + y );
 	| cfa_function_return asm_name_opt
-		{ SemanticError( yylloc, "tuple-element declarations is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "tuple-element declarations is currently unimplemented." ); $$ = nullptr; }
 	| type_qualifier_list cfa_function_return asm_name_opt
-		{ SemanticError( yylloc, "tuple variable declaration is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "tuple variable declaration is currently unimplemented." ); $$ = nullptr; }
 	;
 
 cfa_function_declaration:								// CFA
@@ -2093,15 +2140,15 @@ cfa_function_declaration:								// CFA
 			// Append the return type at the start (left-hand-side) to each identifier in the list.
 			DeclarationNode * ret = new DeclarationNode;
 			ret->type = maybeCopy( $1->type->base );
-			$$ = $1->set_last( DeclarationNode::newFunction( $3, ret, $6, nullptr ) );
+			$$ = $1->set_last( setNameLoc( DeclarationNode::newFunction( $3, ret, $6, nullptr ), @3 ) );
 		}
 	;
 
 cfa_function_specifier:									// CFA
 	'[' ']' identifier '(' push cfa_parameter_list_ellipsis_opt pop ')' attribute_list_opt
-		{ $$ = DeclarationNode::newFunction( $3,  DeclarationNode::newTuple( nullptr ), $6, nullptr )->addQualifiers( $9 ); }
+		{ $$ = setNameLoc( DeclarationNode::newFunction( $3,  DeclarationNode::newTuple( nullptr ), $6, nullptr ), @3 )->addQualifiers( $9 ); }
 	| '[' ']' TYPEDEFname '(' push cfa_parameter_list_ellipsis_opt pop ')' attribute_list_opt
-		{ $$ = DeclarationNode::newFunction( $3,  DeclarationNode::newTuple( nullptr ), $6, nullptr )->addQualifiers( $9 ); }
+		{ $$ = setNameLoc( DeclarationNode::newFunction( $3,  DeclarationNode::newTuple( nullptr ), $6, nullptr ), @3 )->addQualifiers( $9 ); }
 	// | '[' ']' TYPEGENname '(' push cfa_parameter_list_ellipsis_opt pop ')' attribute_list_opt
 	// 	{ $$ = DeclarationNode::newFunction( $3,  DeclarationNode::newTuple( nullptr ), $6, nullptr )->addQualifiers( $9 ); }
 
@@ -2114,9 +2161,9 @@ cfa_function_specifier:									// CFA
 		// flattened to allow lookahead to the '(' without having to reduce identifier_or_type_name.
 	| cfa_abstract_tuple identifier_or_type_name '(' push cfa_parameter_list_ellipsis_opt pop ')' attribute_list_opt
 		// To obtain LR(1 ), this rule must be factored out from function return type (see cfa_abstract_declarator).
-		{ $$ = DeclarationNode::newFunction( $2, $1, $5, nullptr )->addQualifiers( $8 ); }
+		{ $$ = setNameLoc( DeclarationNode::newFunction( $2, $1, $5, nullptr ), @2 )->addQualifiers( $8 ); }
 	| cfa_function_return identifier_or_type_name '(' push cfa_parameter_list_ellipsis_opt pop ')' attribute_list_opt
-		{ $$ = DeclarationNode::newFunction( $2, $1, $5, nullptr )->addQualifiers( $8 ); }
+		{ $$ = setNameLoc( DeclarationNode::newFunction( $2, $1, $5, nullptr ), @2 )->addQualifiers( $8 ); }
 	;
 
 cfa_function_return:									// CFA
@@ -2141,7 +2188,7 @@ cfa_typedef_declaration:								// CFA
 	| cfa_typedef_declaration ',' attribute_list_opt identifier
 		{
 			typedefTable.addToEnclosingScope( *$4, TYPEDEFname, "cfa_typedef_declaration 3" );
-			$$ = $1->set_last( $1->cloneType( $4 )->addQualifiers( $3 ) );
+			$$ = $1->set_last( setNameLoc( $1->cloneType( $4 ), @4 )->addQualifiers( $3 ) );
 		}
 	;
 
@@ -2153,7 +2200,7 @@ typedef_declaration:
 		{
 			typedefTable.addToEnclosingScope( *$4->name, TYPEDEFname, "typedef_declaration 1" );
 			if ( $3->type->forall || ($3->type->kind == TypeData::Aggregate && $3->type->aggregate.params) ) {
-				SemanticError( yylloc, "forall qualifier in typedef is currently unimplemented." ); $$ = nullptr;
+				SemanticError( @$, "forall qualifier in typedef is currently unimplemented." ); $$ = nullptr;
 			} else $$ = $4->addType( $3 )->addTypedef()->addQualifiers( $2 ); // watchout frees $3 and $4
 		}
 	| typedef_declaration ',' attribute_list_opt declarator
@@ -2162,19 +2209,19 @@ typedef_declaration:
 			$$ = $1->set_last( $1->cloneBaseType( $4 )->addTypedef()->addQualifiers( $3 ) );
 		}
 	| type_qualifier_list TYPEDEF type_specifier declarator // remaining OBSOLESCENT (see 2 )
-		{ SemanticError( yylloc, "Type qualifiers/specifiers before TYPEDEF is deprecated, move after TYPEDEF." ); $$ = nullptr; }
+		{ SemanticError( @$, "Type qualifiers/specifiers before TYPEDEF is deprecated, move after TYPEDEF." ); $$ = nullptr; }
 	| type_specifier TYPEDEF declarator
-		{ SemanticError( yylloc, "Type qualifiers/specifiers before TYPEDEF is deprecated, move after TYPEDEF." ); $$ = nullptr; }
+		{ SemanticError( @$, "Type qualifiers/specifiers before TYPEDEF is deprecated, move after TYPEDEF." ); $$ = nullptr; }
 	| type_specifier TYPEDEF type_qualifier_list declarator
-		{ SemanticError( yylloc, "Type qualifiers/specifiers before TYPEDEF is deprecated, move after TYPEDEF." ); $$ = nullptr; }
+		{ SemanticError( @$, "Type qualifiers/specifiers before TYPEDEF is deprecated, move after TYPEDEF." ); $$ = nullptr; }
 	;
 
 typedef_expression:
 		// deprecated GCC, naming expression type: typedef name = exp; gives a name to the type of an expression
 	TYPEDEF identifier '=' assignment_expression
-		{ SemanticError( yylloc, "TYPEDEF expression is deprecated, use typeof(...) instead." ); $$ = nullptr; }
+		{ SemanticError( @$, "TYPEDEF expression is deprecated, use typeof(...) instead." ); $$ = nullptr; }
 	| typedef_expression ',' identifier '=' assignment_expression
-		{ SemanticError( yylloc, "TYPEDEF expression is deprecated, use typeof(...) instead." ); $$ = nullptr; }
+		{ SemanticError( @$, "TYPEDEF expression is deprecated, use typeof(...) instead." ); $$ = nullptr; }
 	;
 
 c_declaration:
@@ -2186,11 +2233,11 @@ c_declaration:
 		{
 			assert( $1->type );
 			if ( $1->type->qualifiers.any() ) {			// CV qualifiers ?
-				SemanticError( yylloc, "illegal syntax, useless type qualifier(s) in empty declaration." ); $$ = nullptr;
+				SemanticError( @$, "illegal syntax, useless type qualifier(s) in empty declaration." ); $$ = nullptr;
 			}
 			// enums are never empty declarations because there must have at least one enumeration.
 			if ( $1->type->kind == TypeData::AggregateInst && $1->storageClasses.any() ) { // storage class ?
-				SemanticError( yylloc, "illegal syntax, useless storage qualifier(s) in empty aggregate declaration." ); $$ = nullptr;
+				SemanticError( @$, "illegal syntax, useless storage qualifier(s) in empty aggregate declaration." ); $$ = nullptr;
 			}
 		}
 	;
@@ -2223,7 +2270,7 @@ declaration_specifier:									// type specifier + storage class
 	| sue_declaration_specifier
 	| sue_declaration_specifier invalid_types			// invalid syntax rule
 		{
-			SemanticError( yylloc, "illegal syntax, expecting ';' at end of \"%s\" declaration.",
+			SemanticError( @$, "illegal syntax, expecting ';' at end of \"%s\" declaration.",
 						   ast::AggregateDecl::aggrString( $1->type->aggregate.kind ) );
 			$$ = nullptr;
 		}
@@ -2404,11 +2451,11 @@ basic_type_name_type:
 	| SVBOOL
 		{ $$ = build_basic_type( TypeData::Svbool ); }
 	| DECIMAL32
-		{ SemanticError( yylloc, "_Decimal32 is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "_Decimal32 is currently unimplemented." ); $$ = nullptr; }
 	| DECIMAL64
-		{ SemanticError( yylloc, "_Decimal64 is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "_Decimal64 is currently unimplemented." ); $$ = nullptr; }
 	| DECIMAL128
-		{ SemanticError( yylloc, "_Decimal128 is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "_Decimal128 is currently unimplemented." ); $$ = nullptr; }
 	| COMPLEX											// C99
 		{ $$ = build_complex_type( TypeData::Complex ); }
 	| IMAGINARY											// C99
@@ -2443,7 +2490,7 @@ default_opt:
 	// empty
 		{ $$ = nullptr; }
 	| DEFAULT
-		{ SemanticError( yylloc, "vtable default is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "vtable default is currently unimplemented." ); $$ = nullptr; }
 	;
 
 basic_declaration_specifier:
@@ -2485,7 +2532,7 @@ indirect_type:
 	| TYPEOF '(' comma_expression ')'					// GCC: typeof( a+b ) y;
 		{ $$ = DeclarationNode::newTypeof( $3 ); }
 	| BASETYPEOF '(' type ')'							// CFA: basetypeof( x ) y;
-		{ $$ = DeclarationNode::newTypeof( new ExpressionNode( new ast::TypeExpr( yylloc, maybeMoveBuildType( $3 ) ) ), true ); }
+		{ $$ = DeclarationNode::newTypeof( new ExpressionNode( new ast::TypeExpr( @$, maybeMoveBuildType( $3 ) ) ), true ); }
 	| BASETYPEOF '(' comma_expression ')'				// CFA: basetypeof( a+b ) y;
 		{ $$ = DeclarationNode::newTypeof( $3, true ); }
 	| ZERO_T											// CFA
@@ -2557,11 +2604,11 @@ type_type_specifier:									// typedef types
 
 type_name:
 	TYPEDEFname
-		{ $$ = build_typedef( $1 ); }
+		{ $$ = setTypeNameLoc( build_typedef( $1 ), @1 ); }
 	| '.' TYPEDEFname
-		{ $$ = build_qualified_type( build_global_scope(), build_typedef( $2 ) ); }
+		{ $$ = build_qualified_type( build_global_scope(), setTypeNameLoc( build_typedef( $2 ), @2 ) ); }
 	| type_name '.' TYPEDEFname
-		{ $$ = build_qualified_type( $1, build_typedef( $3 ) ); }
+		{ $$ = build_qualified_type( $1, setTypeNameLoc( build_typedef( $3 ), @3 ) ); }
 	| typegen_name
 	| '.' typegen_name
 		{ $$ = build_qualified_type( build_global_scope(), $2 ); }
@@ -2571,11 +2618,11 @@ type_name:
 
 typegen_name:											// CFA
 	TYPEGENname
-		{ $$ = build_type_gen( $1, nullptr ); }
+		{ $$ = setTypeNameLoc( build_type_gen( $1, nullptr ), @1 ); }
 	| TYPEGENname '(' ')'
-		{ $$ = build_type_gen( $1, nullptr ); }
+		{ $$ = setTypeNameLoc( build_type_gen( $1, nullptr ), @1 ); }
 	| TYPEGENname '(' type_list ')'
-		{ $$ = build_type_gen( $1, $3 ); }
+		{ $$ = setTypeNameLoc( build_type_gen( $1, $3 ), @1 ); }
 	;
 
 elaborated_type:										// struct, union, enum
@@ -2594,7 +2641,7 @@ aggregate_type:											// struct, union
 	aggregate_key attribute_list_opt
 		{ forall = false; }								// reset
 	  '{' field_declaration_list_opt '}' type_parameters_opt attribute_list_opt
-		{ $$ = DeclarationNode::newAggregate( $1, nullptr, $7, $5, true )->addQualifiers( $2 )->addQualifiers( $8 ); }
+		{ $$ = setAggrLocs( DeclarationNode::newAggregate( $1, nullptr, $7, $5, true ), @1, @$, span( @4, @6 ) )->addQualifiers( $2 )->addQualifiers( $8 ); }
 	| aggregate_key attribute_list_opt identifier attribute_list_opt
 		{
 			typedefTable.makeTypedef( *$3, forall || typedefTable.getEnclForall() ? TYPEGENname : TYPEDEFname, "aggregate_type: 1" );
@@ -2602,7 +2649,7 @@ aggregate_type:											// struct, union
 		}
 	  '{' field_declaration_list_opt '}' type_parameters_opt attribute_list_opt
 		{
-			$$ = DeclarationNode::newAggregate( $1, $3, $9, $7, true )->addQualifiers( $2 )->addQualifiers( $4 )->addQualifiers( $10 );
+			$$ = setAggrLocs( DeclarationNode::newAggregate( $1, $3, $9, $7, true ), @3, @$, span( @6, @8 ) )->addQualifiers( $2 )->addQualifiers( $4 )->addQualifiers( $10 );
 		}
 	| aggregate_key attribute_list_opt TYPEDEFname attribute_list_opt // unqualified type name
 		{
@@ -2612,7 +2659,7 @@ aggregate_type:											// struct, union
 	  '{' field_declaration_list_opt '}' type_parameters_opt attribute_list_opt
 		{
 			DeclarationNode::newFromTypeData( build_typedef( $3 ) );
-			$$ = DeclarationNode::newAggregate( $1, $3, $9, $7, true )->addQualifiers( $2 )->addQualifiers( $4 )->addQualifiers( $10 );
+			$$ = setAggrLocs( DeclarationNode::newAggregate( $1, $3, $9, $7, true ), @3, @$, span( @6, @8 ) )->addQualifiers( $2 )->addQualifiers( $4 )->addQualifiers( $10 );
 		}
 	| aggregate_key attribute_list_opt TYPEGENname attribute_list_opt // unqualified type name
 		{
@@ -2622,7 +2669,7 @@ aggregate_type:											// struct, union
 	  '{' field_declaration_list_opt '}' type_parameters_opt attribute_list_opt
 		{
 			DeclarationNode::newFromTypeData( build_type_gen( $3, nullptr ) );
-			$$ = DeclarationNode::newAggregate( $1, $3, $9, $7, true )->addQualifiers( $2 )->addQualifiers( $10 );
+			$$ = setAggrLocs( DeclarationNode::newAggregate( $1, $3, $9, $7, true ), @3, @$, span( @6, @8 ) )->addQualifiers( $2 )->addQualifiers( $10 );
 		}
 	| aggregate_type_nobody
 	;
@@ -2639,7 +2686,7 @@ aggregate_type_nobody:									// struct, union - {...}
 		{
 			typedefTable.makeTypedef( *$3, forall || typedefTable.getEnclForall() ? TYPEGENname : TYPEDEFname, "aggregate_type_nobody" );
 			forall = false;								// reset
-			$$ = DeclarationNode::newAggregate( $1, $3, nullptr, nullptr, false )->addQualifiers( $2 );
+			$$ = setAggrLocs( DeclarationNode::newAggregate( $1, $3, nullptr, nullptr, false ), @3, @$, CodeLocation() )->addQualifiers( $2 );
 		}
 	| aggregate_key attribute_list_opt type_name
 		{
@@ -2648,9 +2695,9 @@ aggregate_type_nobody:									// struct, union - {...}
 			// switched to a TYPEGENname. Link any generic arguments from typegen_name to new generic declaration and
 			// delete newFromTypeGen.
 			if ( $3->kind == TypeData::SymbolicInst && ! $3->symbolic.isTypedef ) {
-				$$ = DeclarationNode::newFromTypeData( $3 )->addQualifiers( $2 );
+				$$ = DeclarationNode::newFromTypeData( setTypeNameLoc( $3, @3 ) )->addQualifiers( $2 );
 			} else {
-				$$ = DeclarationNode::newAggregate( $1, $3->symbolic.name, $3->symbolic.actuals, nullptr, false )->addQualifiers( $2 );
+				$$ = setAggrLocs( DeclarationNode::newAggregate( $1, $3->symbolic.name, $3->symbolic.actuals, nullptr, false ), @3, @$, CodeLocation() )->addQualifiers( $2 );
 				$3->symbolic.name = nullptr;			// copied to $$
 				$3->symbolic.actuals = nullptr;
 				delete $3;
@@ -2681,21 +2728,21 @@ aggregate_control:										// CFA
 		{ $$ = ast::AggregateDecl::Generator; }
 	| MUTEX GENERATOR
 		{
-			SemanticError( yylloc, "monitor generator is currently unimplemented." );
+			SemanticError( @$, "monitor generator is currently unimplemented." );
 			$$ = ast::AggregateDecl::NoAggregate;
 		}
 	| COROUTINE
 		{ $$ = ast::AggregateDecl::Coroutine; }
 	| MUTEX COROUTINE
 		{
-			SemanticError( yylloc, "monitor coroutine is currently unimplemented." );
+			SemanticError( @$, "monitor coroutine is currently unimplemented." );
 			$$ = ast::AggregateDecl::NoAggregate;
 		}
 	| THREAD
 		{ $$ = ast::AggregateDecl::Thread; }
 	| MUTEX THREAD
 		{
-			SemanticError( yylloc, "monitor thread is currently unimplemented." );
+			SemanticError( @$, "monitor thread is currently unimplemented." );
 			$$ = ast::AggregateDecl::NoAggregate;
 		}
 	;
@@ -2709,16 +2756,16 @@ field_declaration_list_opt:
 
 field_declaration:
 	type_specifier field_declaring_list_opt ';'
-		{ $$ = fieldDecl( $1, $2 ); }
+		{ $$ = setExtent( fieldDecl( $1, $2 ), @$ ); }
 	| type_specifier field_declaring_list_opt '}'		// invalid syntax rule
 		{
-			SemanticError( yylloc, "illegal syntax, expecting ';' at end of previous declaration." );
+			SemanticError( @$, "illegal syntax, expecting ';' at end of previous declaration." );
 			$$ = nullptr;
 		}
 	| EXTENSION type_specifier field_declaring_list_opt ';'	// GCC
-		{ $$ = fieldDecl( $2, $3 ); distExt( $$ ); }
+		{ $$ = setExtent( fieldDecl( $2, $3 ), @$ ); distExt( $$ ); }
 	| STATIC type_specifier field_declaring_list_opt ';' // CFA
-		{ SemanticError( yylloc, "STATIC aggregate field qualifier currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "STATIC aggregate field qualifier currently unimplemented." ); $$ = nullptr; }
 	| INLINE attribute_list_opt type_specifier field_abstract_list_opt ';'	// CFA
 		{
 			if ( ! $4 ) {								// field declarator ?
@@ -2729,9 +2776,10 @@ field_declaration:
 			distInl( $4 );
 		}
 	| INLINE attribute_list_opt aggregate_control ';'						// CFA
-		{ SemanticError( yylloc, "INLINE aggregate control currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "INLINE aggregate control currently unimplemented." ); $$ = nullptr; }
 	| typedef_declaration ';'							// CFA
 	| cfa_field_declaring_list ';'						// CFA, new style field declaration
+		{ $$ = setExtent( $1, @$ ); }
 	| EXTENSION cfa_field_declaring_list ';'			// GCC
 		{ distExt( $2 ); $$ = $2; }						// mark all fields in list
 	| INLINE attribute_list_opt cfa_field_abstract_list ';'	// CFA, new style field declaration
@@ -2781,9 +2829,9 @@ field_abstract:
 cfa_field_declaring_list:								// CFA, new style field declaration
 	// bit-fields are handled by C declarations
 	cfa_abstract_declarator_tuple identifier_or_type_name
-		{ $$ = $1->addName( $2 ); }
+		{ $$ = setNameLoc( $1->addName( $2 ), @2 ); }
 	| cfa_field_declaring_list ',' identifier_or_type_name
-		{ $$ = $1->set_last( $1->cloneType( $3 ) ); }
+		{ $$ = $1->set_last( setNameLoc( $1->cloneType( $3 ), @3 ) ); }
 	;
 
 cfa_field_abstract_list:								// CFA, new style field declaration
@@ -2811,39 +2859,39 @@ enum_type:
 	ENUM attribute_list_opt hide_opt '{' enumerator_list comma_opt '}' attribute_list_opt
 		{
 			if ( $3 == EnumHiding::Hide ) {
-				SemanticError( yylloc, "illegal syntax, hiding ('!') the enumerator names of an anonymous enumeration means the names are inaccessible." ); $$ = nullptr;
+				SemanticError( @$, "illegal syntax, hiding ('!') the enumerator names of an anonymous enumeration means the names are inaccessible." ); $$ = nullptr;
 			} // if
-			$$ = DeclarationNode::newEnum( nullptr, $5, true, false )->addQualifiers( $2 )->addQualifiers( $8 );
+			$$ = setAggrLocs( DeclarationNode::newEnum( nullptr, $5, true, false ), @1, @$, span( @4, @7 ) )->addQualifiers( $2 )->addQualifiers( $8 );
 		}
 	| ENUM enumerator_type attribute_list_opt hide_opt '{' enumerator_list comma_opt '}' attribute_list_opt
 		{
 			if ( $2 && ($2->storageClasses.val != 0 || $2->type->qualifiers.any()) ) {
-				SemanticError( yylloc, "illegal syntax, storage-class and CV qualifiers are not meaningful for enumeration constants, which are const." );
+				SemanticError( @$, "illegal syntax, storage-class and CV qualifiers are not meaningful for enumeration constants, which are const." );
 			}
 			if ( $4 == EnumHiding::Hide ) {
-				SemanticError( yylloc, "illegal syntax, hiding ('!') the enumerator names of an anonymous enumeration means the names are inaccessible." ); $$ = nullptr;
+				SemanticError( @$, "illegal syntax, hiding ('!') the enumerator names of an anonymous enumeration means the names are inaccessible." ); $$ = nullptr;
 			} // if
-			$$ = DeclarationNode::newEnum( nullptr, $6, true, true, $2 )->addQualifiers( $3 )->addQualifiers( $9 );
+			$$ = setAggrLocs( DeclarationNode::newEnum( nullptr, $6, true, true, $2 ), @1, @$, span( @5, @8 ) )->addQualifiers( $3 )->addQualifiers( $9 );
 		}
 
 		// named type
 	| ENUM attribute_list_opt identifier attribute_list_opt
 		{ typedefTable.makeTypedef( *$3, "enum_type 1" ); }
 	  hide_opt '{' enumerator_list comma_opt '}' attribute_list_opt
-		{ $$ = DeclarationNode::newEnum( $3, $8, true, false, nullptr, $6 )->addQualifiers( $2 ->addQualifiers( $4 ))->addQualifiers( $11 ); }
+		{ $$ = setAggrLocs( DeclarationNode::newEnum( $3, $8, true, false, nullptr, $6 ), @3, @$, span( @7, @10 ) )->addQualifiers( $2 ->addQualifiers( $4 ))->addQualifiers( $11 ); }
 	| ENUM attribute_list_opt typedef_name attribute_list_opt hide_opt '{' enumerator_list comma_opt '}' attribute_list_opt // unqualified type name
-		{ $$ = DeclarationNode::newEnum( $3->name, $7, true, false, nullptr, $5 )->addQualifiers( $2 )->addQualifiers( $4 )->addQualifiers( $10 ); }
+		{ $$ = setAggrLocs( DeclarationNode::newEnum( $3->name, $7, true, false, nullptr, $5 ), @3, @$, span( @6, @9 ) )->addQualifiers( $2 )->addQualifiers( $4 )->addQualifiers( $10 ); }
 	| ENUM enumerator_type attribute_list_opt identifier attribute_list_opt
 		{
 			if ( $2 && ($2->storageClasses.any() || $2->type->qualifiers.val != 0) ) {
-				SemanticError( yylloc, "illegal syntax, storage-class and CV qualifiers are not meaningful for enumeration constants, which are const." );
+				SemanticError( @$, "illegal syntax, storage-class and CV qualifiers are not meaningful for enumeration constants, which are const." );
 			}
 			typedefTable.makeTypedef( *$4, "enum_type 2" );
 		}
 	  hide_opt '{' enumerator_list comma_opt '}' attribute_list_opt
-		{ $$ = DeclarationNode::newEnum( $4, $9, true, true, $2, $7 )->addQualifiers( $3 )->addQualifiers( $5 )->addQualifiers( $12 ); }
+		{ $$ = setAggrLocs( DeclarationNode::newEnum( $4, $9, true, true, $2, $7 ), @4, @$, span( @8, @11 ) )->addQualifiers( $3 )->addQualifiers( $5 )->addQualifiers( $12 ); }
 	| ENUM enumerator_type attribute_list_opt typedef_name attribute_list_opt hide_opt '{' enumerator_list comma_opt '}' attribute_list_opt
-		{ $$ = DeclarationNode::newEnum( $4->name, $8, true, true, $2, $6 )->addQualifiers( $3 )->addQualifiers( $5 )->addQualifiers( $11 ); }
+		{ $$ = setAggrLocs( DeclarationNode::newEnum( $4->name, $8, true, true, $2, $6 ), @4, @$, span( @7, @10 ) )->addQualifiers( $3 )->addQualifiers( $5 )->addQualifiers( $11 ); }
 
 		// forward declaration
 	| enum_type_nobody
@@ -2867,20 +2915,20 @@ enum_type_nobody:										// enum - {...}
 	ENUM attribute_list_opt identifier
 		{
 			typedefTable.makeTypedef( *$3, "enum_type_nobody 1" );
-			$$ = DeclarationNode::newEnum( $3, nullptr, false, false )->addQualifiers( $2 );
+			$$ = setAggrLocs( DeclarationNode::newEnum( $3, nullptr, false, false ), @3, @$, CodeLocation() )->addQualifiers( $2 );
 		}
 	| ENUM attribute_list_opt type_name
 		{
 			typedefTable.makeTypedef( *$3->symbolic.name, "enum_type_nobody 2" );
-			$$ = DeclarationNode::newEnum( $3->symbolic.name, nullptr, false, false )->addQualifiers( $2 );
+			$$ = setAggrLocs( DeclarationNode::newEnum( $3->symbolic.name, nullptr, false, false ), @3, @$, CodeLocation() )->addQualifiers( $2 );
 		}
 	;
 
 enumerator_list:
 	// empty
-		{ SemanticError( yylloc, "enumeration must have a minimum of one enumerator, empty enumerator list is meaningless." );  $$ = nullptr; }
+		{ SemanticError( @$, "enumeration must have a minimum of one enumerator, empty enumerator list is meaningless." );  $$ = nullptr; }
 	| visible_hide_opt identifier_or_type_name enumerator_value_opt
-		{ $$ = DeclarationNode::newEnumValueGeneric( $2, $3 ); }
+		{ $$ = setExtent( setNameLoc( DeclarationNode::newEnumValueGeneric( $2, $3 ), @2 ), span( @2, @3 ) ); }
 	| INLINE type_name
 		{
 			$$ = DeclarationNode::newEnumInLine( $2->symbolic.name );
@@ -2888,7 +2936,7 @@ enumerator_list:
 			delete $2;
 		}
 	| enumerator_list ',' visible_hide_opt identifier_or_type_name enumerator_value_opt
-		{ $$ = $1->set_last( DeclarationNode::newEnumValueGeneric( $4, $5 ) ); }
+		{ $$ = $1->set_last( setExtent( setNameLoc( DeclarationNode::newEnumValueGeneric( $4, $5 ), @4 ), span( @4, @5 ) ) ); }
 	| enumerator_list ',' INLINE type_name
 		{ $$ = $1->set_last( DeclarationNode::newEnumInLine( $4->symbolic.name )  ); }
 	;
@@ -2972,9 +3020,9 @@ cfa_abstract_parameter_list:							// CFA, new & old style abstract
 parameter_declaration:
 		// No SUE declaration in parameter list.
 	declaration_specifier_nobody identifier_parameter_declarator default_initializer_opt
-		{ $$ = $2->addType( $1 )->addInitializer( $3 ? new InitializerNode( $3 ) : nullptr ); }
+		{ $$ = setExtent( $2->addType( $1 ), @$ )->addInitializer( $3 ? new InitializerNode( $3 ) : nullptr ); }
 	| declaration_specifier_nobody type_parameter_redeclarator default_initializer_opt
-		{ $$ = $2->addType( $1 )->addInitializer( $3 ? new InitializerNode( $3 ) : nullptr ); }
+		{ $$ = setExtent( $2->addType( $1 ), @$ )->addInitializer( $3 ? new InitializerNode( $3 ) : nullptr ); }
 	;
 
 abstract_parameter_declaration:
@@ -2987,12 +3035,12 @@ abstract_parameter_declaration:
 cfa_parameter_declaration:								// CFA, new & old style parameter declaration
 	parameter_declaration
 	| cfa_identifier_parameter_declarator_no_tuple identifier_or_type_name default_initializer_opt
-		{ $$ = $1->addName( $2 ); }
+		{ $$ = setNameLoc( $1->addName( $2 ), @2 ); }
 	| cfa_abstract_tuple identifier_or_type_name default_initializer_opt
 		// To obtain LR(1), these rules must be duplicated here (see cfa_abstract_declarator).
-		{ $$ = $1->addName( $2 ); }
+		{ $$ = setNameLoc( $1->addName( $2 ), @2 ); }
 	| type_qualifier_list cfa_abstract_tuple identifier_or_type_name default_initializer_opt
-		{ $$ = $2->addName( $3 )->addQualifiers( $1 ); }
+		{ $$ = setNameLoc( $2->addName( $3 ), @3 )->addQualifiers( $1 ); }
 	| cfa_function_specifier							// int f( "int fp()" );
 	;
 
@@ -3012,9 +3060,9 @@ cfa_abstract_parameter_declaration:						// CFA, new & old style parameter decla
 
 identifier_list:										// K&R-style parameter list => no types
 	identifier
-		{ $$ = DeclarationNode::newName( $1 ); }
+		{ $$ = setNameLoc( DeclarationNode::newName( $1 ), @1 ); }
 	| identifier_list ',' identifier
-		{ $$ = $1->set_last( DeclarationNode::newName( $3 ) ); }
+		{ $$ = $1->set_last( setNameLoc( DeclarationNode::newName( $3 ), @3 ) ); }
 	;
 
 type_no_function:										// sizeof, alignof, cast (constructor)
@@ -3068,7 +3116,7 @@ initializer_list_opt:
 designation:
 	designator_list '='									// C99, CFA uses ":" instead of "="
 	| identifier_at ':'									// GCC, field name, obsolete since GCC 2.5
-		{ $$ = new ExpressionNode( build_varref( yylloc, $1 ) ); }
+		{ $$ = new ExpressionNode( build_varref( @1, $1 ) ); }
 	;
 
 designator_list:										// C99
@@ -3079,13 +3127,13 @@ designator_list:										// C99
 
 designator:
 	'.' identifier_at									// C99, field name
-		{ $$ = new ExpressionNode( build_varref( yylloc, $2 ) ); }
+		{ $$ = new ExpressionNode( build_varref( @2, $2 ) ); }
 	| '[' constant_expression ']'						// C99, single array element
 		{ $$ = $2; }
 	| '[' subrange ']'									// CFA, multiple array elements
 		{ $$ = $2; }
 	| '[' constant_expression ELLIPSIS constant_expression ']' // GCC, multiple array elements
-		{ $$ = new ExpressionNode( new ast::RangeExpr( yylloc, maybeMoveBuild( $2 ), maybeMoveBuild( $4 ) ) ); }
+		{ $$ = new ExpressionNode( new ast::RangeExpr( @$, maybeMoveBuild( $2 ), maybeMoveBuild( $4 ) ) ); }
 	| '.' '[' field_name_list ']'						// CFA, tuple field selector
 		{ $$ = $3; }
 	;
@@ -3125,15 +3173,15 @@ type_parameter:											// CFA
 	type_class identifier_or_type_name
 		{ typedefTable.addToScope( *$2, TYPEDEFname, "type_parameter 1" ); }
 	  type_initializer_opt assertion_list_opt
-		{ $$ = DeclarationNode::newTypeParam( $1, $2 )->addTypeInitializer( $4 )->addAssertions( $5 ); }
+		{ $$ = setExtent( setNameLoc( DeclarationNode::newTypeParam( $1, $2 ), @2 ), @$ )->addTypeInitializer( $4 )->addAssertions( $5 ); }
 	| identifier_or_type_name new_type_class
 		{ typedefTable.addToScope( *$1, TYPEDEFname, "type_parameter 2" ); }
 	  type_initializer_opt assertion_list_opt
-		{ $$ = DeclarationNode::newTypeParam( $2, $1 )->addTypeInitializer( $4 )->addAssertions( $5 ); }
+		{ $$ = setExtent( setNameLoc( DeclarationNode::newTypeParam( $2, $1 ), @1 ), @$ )->addTypeInitializer( $4 )->addAssertions( $5 ); }
 	| '[' identifier_or_type_name ']' assertion_list_opt
 		{
 			typedefTable.addToScope( *$2, TYPEDIMname, "type_parameter 3" );
-			$$ = DeclarationNode::newTypeParam( ast::TypeDecl::Dimension, $2 )->addAssertions( $4 );
+			$$ = setExtent( setNameLoc( DeclarationNode::newTypeParam( ast::TypeDecl::Dimension, $2 ), @2 ), @$ )->addAssertions( $4 );
 		}
 	// | type_specifier identifier_parameter_declarator
 	| assertion_list
@@ -3143,7 +3191,7 @@ type_parameter:											// CFA
 		{	
 			typedefTable.addToScope( *$3, TYPEDIMname, "type_parameter 4" );
 			typedefTable.addToScope( *$5, TYPEDIMname, "type_parameter 5" );
-			$$ = DeclarationNode::newTypeParam( $6, $5 )->addTypeInitializer( $7 )->addAssertions( $8 );
+			$$ = setExtent( setNameLoc( DeclarationNode::newTypeParam( $6, $5 ), @5 ), @$ )->addTypeInitializer( $7 )->addAssertions( $8 );
 		}
 	;
 
@@ -3162,13 +3210,13 @@ new_type_class:											// CFA
 
 type_class:												// CFA
 	OTYPE
-		{ SemanticError( yylloc, "otype keyword is deprecated, use T " ); }
+		{ SemanticError( @$, "otype keyword is deprecated, use T " ); }
 	| DTYPE
-		{ SemanticError( yylloc, "dtype keyword is deprecated, use T &" ); }
+		{ SemanticError( @$, "dtype keyword is deprecated, use T &" ); }
 	| FTYPE
 		{ $$ = ast::TypeDecl::Ftype; }
 	| TTYPE
-		{ SemanticError( yylloc, "ttype keyword is deprecated, use T ..." ); }
+		{ SemanticError( @$, "ttype keyword is deprecated, use T ..." ); }
 	;
 
 assertion_list_opt:										// CFA
@@ -3185,19 +3233,19 @@ assertion_list:											// CFA
 
 assertion:												// CFA
 	'|' identifier_or_type_name '(' type_list ')'
-		{ $$ = DeclarationNode::newTraitUse( $2, $4 ); }
+		{ $$ = DeclarationNode::newTraitUse( $2, $4 ); setTypeNameLoc( $$->type->aggInst.aggregate, @2 ); }
 	| '|' '{' trait_declaration_list '}'
 		{ $$ = $3; }
 	// | '|' '(' push type_parameter_list pop ')' '{' push trait_declaration_list pop '}' '(' type_list ')'
-	// 	{ SemanticError( yylloc, "Generic data-type assertion is currently unimplemented." ); $$ = nullptr; }
+	// 	{ SemanticError( @$, "Generic data-type assertion is currently unimplemented." ); $$ = nullptr; }
 	;
 
 type_list:												// CFA
 	type
-		{ $$ = new ExpressionNode( new ast::TypeExpr( yylloc, maybeMoveBuildType( $1 ) ) ); }
+		{ $$ = new ExpressionNode( new ast::TypeExpr( @$, maybeMoveBuildType( $1 ) ) ); }
 	| assignment_expression
 	| type_list ',' type
-		{ $$ = $1->set_last( new ExpressionNode( new ast::TypeExpr( yylloc, maybeMoveBuildType( $3 ) ) ) ); }
+		{ $$ = $1->set_last( new ExpressionNode( new ast::TypeExpr( @$, maybeMoveBuildType( $3 ) ) ) ); }
 	| type_list ',' assignment_expression
 		{ $$ = $1->set_last( $3 ); }
 	;
@@ -3222,30 +3270,30 @@ type_declarator_name:									// CFA
 	identifier_or_type_name
 		{
 			typedefTable.addToEnclosingScope( *$1, TYPEDEFname, "type_declarator_name 1" );
-			$$ = DeclarationNode::newTypeDecl( $1, nullptr );
+			$$ = setNameLoc( DeclarationNode::newTypeDecl( $1, nullptr ), @1 );
 		}
 	| identifier_or_type_name '(' type_parameter_list ')'
 		{
 			typedefTable.addToEnclosingScope( *$1, TYPEGENname, "type_declarator_name 2" );
-			$$ = DeclarationNode::newTypeDecl( $1, $3 );
+			$$ = setNameLoc( DeclarationNode::newTypeDecl( $1, $3 ), @1 );
 		}
 	;
 
 trait_specifier:										// CFA
 	TRAIT identifier_or_type_name '(' type_parameter_list ')' '{' '}'
 		{
-			SemanticWarning( yylloc, Warning::DeprecTraitSyntax );
-			$$ = DeclarationNode::newTrait( $2, $4, nullptr );
+			SemanticWarning( @$, Warning::DeprecTraitSyntax );
+			$$ = setAggrLocs( DeclarationNode::newTrait( $2, $4, nullptr ), @2, @$, span( @6, @7 ) );
 		}
 	| forall TRAIT identifier_or_type_name '{' '}'		// new alternate
-		{ $$ = DeclarationNode::newTrait( $3, $1, nullptr ); }
+		{ $$ = setAggrLocs( DeclarationNode::newTrait( $3, $1, nullptr ), @3, @$, span( @4, @5 ) ); }
 	| TRAIT identifier_or_type_name '(' type_parameter_list ')' '{' trait_declaration_list '}'
 		{
-			SemanticWarning( yylloc, Warning::DeprecTraitSyntax );
-			$$ = DeclarationNode::newTrait( $2, $4, $7 );
+			SemanticWarning( @$, Warning::DeprecTraitSyntax );
+			$$ = setAggrLocs( DeclarationNode::newTrait( $2, $4, $7 ), @2, @$, span( @6, @8 ) );
 		}
 	| forall TRAIT identifier_or_type_name '{' trait_declaration_list '}' // alternate
-		{ $$ = DeclarationNode::newTrait( $3, $1, $5 ); }
+		{ $$ = setAggrLocs( DeclarationNode::newTrait( $3, $1, $5 ), @3, @$, span( @4, @6 ) ); }
 	;
 
 trait_declaration_list:									// CFA
@@ -3263,7 +3311,7 @@ cfa_trait_declaring_list:								// CFA
 	cfa_variable_specifier
 	| cfa_function_specifier
 	| cfa_trait_declaring_list ',' identifier_or_type_name
-		{ $$ = $1->set_last( $1->cloneType( $3 ) ); }
+		{ $$ = $1->set_last( setNameLoc( $1->cloneType( $3 ), @3 ) ); }
 	;
 
 trait_declaring_list:									// CFA
@@ -3273,7 +3321,7 @@ trait_declaring_list:									// CFA
 	| trait_declaring_list ',' declarator
 		{ $$ = $1->set_last( $1->cloneBaseType( $3 ) ); }
 	| error
-		{ SemanticError( yylloc, "Possible cause is declaring an aggregate or enumeration type in a trait." ); $$ = nullptr; }
+		{ SemanticError( @$, "Possible cause is declaring an aggregate or enumeration type in a trait." ); $$ = nullptr; }
 	;
 
 // **************************** EXTERNAL DEFINITIONS *****************************
@@ -3307,7 +3355,7 @@ down:
 
 external_definition:
 	DIRECTIVE
-		{ $$ = DeclarationNode::newDirectiveStmt( new StatementNode( build_directive( yylloc, $1 ) ) ); }
+		{ $$ = DeclarationNode::newDirectiveStmt( new StatementNode( build_directive( @$, $1 ) ) ); }
 	| declaration
 		{
 			// Variable declarations of anonymous types requires creating a unique type-name across multiple translation
@@ -3316,7 +3364,7 @@ external_definition:
 			if ( $1->linkage == ast::Linkage::Cforall && ! $1->storageClasses.is_static &&
 				 $1->type && $1->type->kind == TypeData::AggregateInst ) {
 				if ( $1->type->aggInst.aggregate->aggregate.anon ) {
-					SemanticError( yylloc, "extern anonymous aggregate is currently unimplemented." ); $$ = nullptr;
+					SemanticError( @$, "extern anonymous aggregate is currently unimplemented." ); $$ = nullptr;
 				}
 			}
 		}
@@ -3339,11 +3387,11 @@ external_definition:
 			$$ = $2;
 		}
 	| ASM '(' string_literal ')' ';'					// GCC, global assembler statement
-		{ $$ = DeclarationNode::newAsmStmt( new StatementNode( build_asm( yylloc, false, $3, nullptr ) ) ); }
+		{ $$ = DeclarationNode::newAsmStmt( new StatementNode( build_asm( @$, false, $3, nullptr ) ) ); }
 	| EXTERN STRINGliteral
 		{
 			linkageStack.push( linkage );				// handle nested extern "C"/"Cforall"
-			linkage = ast::Linkage::update( yylloc, linkage, $2 );
+			linkage = ast::Linkage::update( @$, linkage, $2 );
 		}
 	  up external_definition down
 		{
@@ -3354,7 +3402,7 @@ external_definition:
 	| EXTERN STRINGliteral								// C++-style linkage specifier
 		{
 			linkageStack.push( linkage );				// handle nested extern "C"/"Cforall"
-			linkage = ast::Linkage::update( yylloc, linkage, $2 );
+			linkage = ast::Linkage::update( @$, linkage, $2 );
 		}
 	  '{' up external_definition_list_opt down '}'
 		{
@@ -3366,7 +3414,7 @@ external_definition:
 	| type_qualifier_list
 		{
 			if ( $1->type->qualifiers.any() ) {
-				SemanticError( yylloc, "illegal syntax, CV qualifiers cannot be distributed; only storage-class and forall qualifiers." );
+				SemanticError( @$, "illegal syntax, CV qualifiers cannot be distributed; only storage-class and forall qualifiers." );
 			}
 			if ( $1->type->forall ) forall = true;		// remember generic type
 		}
@@ -3379,7 +3427,7 @@ external_definition:
 	| declaration_qualifier_list
 		{
 			if ( $1->type && $1->type->qualifiers.any() ) {
-				SemanticError( yylloc, "illegal syntax, CV qualifiers cannot be distributed; only storage-class and forall qualifiers." );
+				SemanticError( @$, "illegal syntax, CV qualifiers cannot be distributed; only storage-class and forall qualifiers." );
 			}
 			if ( $1->type && $1->type->forall ) forall = true; // remember generic type
 		}
@@ -3392,7 +3440,7 @@ external_definition:
 	| declaration_qualifier_list type_qualifier_list
 		{
 			if ( ($1->type && $1->type->qualifiers.any()) || ($2->type && $2->type->qualifiers.any()) ) {
-				SemanticError( yylloc, "illegal syntax, CV qualifiers cannot be distributed; only storage-class and forall qualifiers." );
+				SemanticError( @$, "illegal syntax, CV qualifiers cannot be distributed; only storage-class and forall qualifiers." );
 			}
 			if ( ($1->type && $1->type->forall) || ($2->type && $2->type->forall) ) forall = true; // remember generic type
 		}
@@ -3408,15 +3456,16 @@ external_definition:
 
 external_function_definition:
 	function_definition
+		{ $$ = setExtent( $1, @$ ); }
 		// These rules are a concession to the "implicit int" type_specifier because there is a significant amount of
 		// legacy code with global functions missing the type-specifier for the return type, and assuming "int".
 		// Parsing is possible because function_definition does not appear in the context of an expression (nested
 		// functions preclude this concession, i.e., all nested function must have a return type). A function prototype
 		// declaration must still have a type_specifier.  OBSOLESCENT (see 1)
 	| function_declarator compound_statement
-		{ $$ = $1->addFunctionBody( $2 ); }
+		{ $$ = setExtent( $1->addFunctionBody( $2 ), @$ ); }
 	| KR_function_declarator KR_parameter_list_opt compound_statement
-		{ $$ = $1->addOldDeclList( $2 )->addFunctionBody( $3 ); }
+		{ $$ = setExtent( $1->addOldDeclList( $2 )->addFunctionBody( $3 ), @$ ); }
 	;
 
 with_clause_opt:
@@ -3426,7 +3475,7 @@ with_clause_opt:
 		{
 			$$ = $3; forall = false;
 			if ( $5 ) {
-				SemanticError( yylloc, "illegal syntax, attributes cannot be associated with function body. Move attribute(s) before \"with\" clause." );
+				SemanticError( @$, "illegal syntax, attributes cannot be associated with function body. Move attribute(s) before \"with\" clause." );
 				$$ = nullptr;
 			} // if
 		}
@@ -3486,7 +3535,7 @@ declarator:
 
 subrange:
 	constant_expression '~' constant_expression			// CFA, integer subrange
-		{ $$ = new ExpressionNode( new ast::RangeExpr( yylloc, maybeMoveBuild( $1 ), maybeMoveBuild( $3 ) ) ); }
+		{ $$ = new ExpressionNode( new ast::RangeExpr( @$, maybeMoveBuild( $1 ), maybeMoveBuild( $3 ) ) ); }
 	;
 
 // **************************** ASM *****************************
@@ -3582,10 +3631,10 @@ attr_name:												// GCC
 
 paren_identifier:
 	identifier_at
-		{ $$ = DeclarationNode::newName( $1 ); }
+		{ $$ = setNameLoc( DeclarationNode::newName( $1 ), @1 ); }
 	| '?' identifier
-		// { SemanticError( yylloc, "keyword parameter is currently unimplemented." ); $$ = nullptr; }
-		{ $$ = DeclarationNode::newName( $2 ); }
+		// { SemanticError( @$, "keyword parameter is currently unimplemented." ); $$ = nullptr; }
+		{ $$ = setNameLoc( DeclarationNode::newName( $2 ), @2 ); }
 	| '(' paren_identifier ')'							// redundant parenthesis
 		{ $$ = $2; }
 	;
@@ -3942,9 +3991,9 @@ type_parameter_redeclarator:
 
 typedef_name:
 	TYPEDEFname
-		{ $$ = DeclarationNode::newName( $1 ); }
+		{ $$ = setNameLoc( DeclarationNode::newName( $1 ), @1 ); }
 	| TYPEGENname
-		{ $$ = DeclarationNode::newName( $1 ); }
+		{ $$ = setNameLoc( DeclarationNode::newName( $1 ), @1 ); }
 	;
 
 type_parameter_ptr:
@@ -4034,10 +4083,10 @@ array_dimension:
 		{ $$ = DeclarationNode::newArray( nullptr, nullptr, false )->addArray( $3 ); }
 		// Cannot use constant_expression because of tuples => semantic check
 	| '[' assignment_expression ',' ']'					// CFA
-		{ SemanticError( yylloc, "New array dimension is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "New array dimension is currently unimplemented." ); $$ = nullptr; }
 		// { $$ = DeclarationNode::newArray( $2, nullptr, false ); }
 	| '[' assignment_expression ',' comma_expression ']' // CFA
-		{ SemanticError( yylloc, "New array dimension is currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "New array dimension is currently unimplemented." ); $$ = nullptr; }
 		// { $$ = DeclarationNode::newArray( $2, nullptr, false )->addArray( DeclarationNode::newArray( $4, nullptr, false ) ); }
 
 		// If needed, the following parses and does not use comma_expression, so the array structure can be built.
@@ -4055,14 +4104,14 @@ array_dimension:
 
 array_type_list:
 	basic_type_name
-		{ $$ = new ExpressionNode( new ast::TypeExpr( yylloc, maybeMoveBuildType( $1 ) ) ); }
+		{ $$ = new ExpressionNode( new ast::TypeExpr( @$, maybeMoveBuildType( $1 ) ) ); }
 	| type_name
-		{ $$ = new ExpressionNode( new ast::TypeExpr( yylloc, maybeMoveBuildType( $1 ) ) ); }
+		{ $$ = new ExpressionNode( new ast::TypeExpr( @$, maybeMoveBuildType( $1 ) ) ); }
 	| assignment_expression upupeq assignment_expression
 	| array_type_list ',' basic_type_name
-		{ $$ = $1->set_last( new ExpressionNode( new ast::TypeExpr( yylloc, maybeMoveBuildType( $3 ) ) ) ); }
+		{ $$ = $1->set_last( new ExpressionNode( new ast::TypeExpr( @$, maybeMoveBuildType( $3 ) ) ) ); }
 	| array_type_list ',' type_name
-		{ $$ = $1->set_last( new ExpressionNode( new ast::TypeExpr( yylloc, maybeMoveBuildType( $3 ) ) ) ); }
+		{ $$ = $1->set_last( new ExpressionNode( new ast::TypeExpr( @$, maybeMoveBuildType( $3 ) ) ) ); }
 	| array_type_list ',' assignment_expression upupeq assignment_expression
 	;
 
@@ -4395,9 +4444,9 @@ cfa_abstract_tuple:										// CFA
 	'[' cfa_abstract_parameter_list ']'
 		{ $$ = DeclarationNode::newTuple( $2 ); }
 	| '[' type_specifier_nobody ELLIPSIS ']'
-		{ SemanticError( yylloc, "Tuple array currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "Tuple array currently unimplemented." ); $$ = nullptr; }
 	| '[' type_specifier_nobody ELLIPSIS constant_expression ']'
-		{ SemanticError( yylloc, "Tuple array currently unimplemented." ); $$ = nullptr; }
+		{ SemanticError( @$, "Tuple array currently unimplemented." ); $$ = nullptr; }
 	;
 
 cfa_abstract_function:									// CFA

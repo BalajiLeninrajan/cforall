@@ -179,6 +179,9 @@ TypeData::~TypeData() {
 TypeData * TypeData::clone() const {
 	TypeData * newtype = new TypeData( kind );
 	newtype->qualifiers = qualifiers;
+	newtype->nameLoc = nameLoc;
+	newtype->extent = extent;
+	newtype->bodyLoc = bodyLoc;
 	newtype->base = maybeCopy( base );
 	newtype->forall = maybeCopy( forall );
 
@@ -1233,6 +1236,13 @@ ast::ReferenceType * buildReference( const TypeData * td ) {
 } // buildReference
 
 
+// The LSP dump locations of an aggregate declaration.
+static void setLspLocations( const TypeData * td, ast::AggregateDecl * decl ) {
+	if ( td->nameLoc.isSet() ) decl->location = td->nameLoc;
+	decl->extent = td->extent;
+	decl->bodyLocation = td->bodyLoc;
+}
+
 ast::AggregateDecl * buildAggregate( const TypeData * td, std::vector<ast::ptr<ast::Attribute>> attributes, ast::Linkage::Spec linkage ) {
 	assert( td->kind == TypeData::Aggregate );
 	ast::AggregateDecl * at;
@@ -1275,12 +1285,13 @@ ast::AggregateDecl * buildAggregate( const TypeData * td, std::vector<ast::ptr<a
 
 	buildList( td->aggregate.fields, at->members );
 	at->set_body( td->aggregate.body );
+	setLspLocations( td, at );
 
 	return at;
 } // buildAggregate
 
 
-ast::BaseInstType * buildComAggInst(
+static ast::BaseInstType * buildComAggInstNode(
 		const TypeData * td,
 		std::vector<ast::ptr<ast::Attribute>> && attributes,
 		ast::Linkage::Spec linkage ) {
@@ -1351,6 +1362,15 @@ ast::BaseInstType * buildComAggInst(
 	assert( false );
 } // buildAggInst
 
+ast::BaseInstType * buildComAggInst(
+		const TypeData * td,
+		std::vector<ast::ptr<ast::Attribute>> && attributes,
+		ast::Linkage::Spec linkage ) {
+	ast::BaseInstType * ret = buildComAggInstNode( td, std::move( attributes ), linkage );
+	ret->location = td->nameLoc;
+	return ret;
+} // buildComAggInst
+
 
 ast::BaseInstType * buildAggInst( const TypeData * td ) {
 	assert( td->kind == TypeData::AggregateInst );
@@ -1395,6 +1415,7 @@ ast::BaseInstType * buildAggInst( const TypeData * td ) {
 		assert( false );
 	} // switch
 
+	ret->location = type->nameLoc;
 	ret->hoistType = td->aggInst.hoistType;
 	buildList( td->aggInst.params, ret->params );
 	return ret;
@@ -1485,6 +1506,7 @@ ast::EnumDecl * buildEnum(
 		// if
 	} // for
 	ret->body = td->aggregate.body;
+	setLspLocations( td, ret );
 	return ret;
 } // buildEnum
 
@@ -1496,6 +1518,7 @@ ast::TypeInstType * buildSymbolicInst( const TypeData * td ) {
 		ast::TypeDecl::Dtype,
 		buildQualifiers( td )
 	);
+	ret->location = td->nameLoc;
 	buildList( td->symbolic.actuals, ret->params );
 	return ret;
 } // buildSymbolicInst

@@ -42,6 +42,12 @@ class SemanticErrorException : public std::exception {
 	void append( CodeLocation location, const std::string & );
 	void throwIfNonEmpty();
 	void print();
+	bool isEmpty() const { return errors.empty(); }
+	const std::list< error > & getErrors() const { return errors; }
   private:
 	std::list< error > errors;
 };
+
+// When set, a pass that visits a statement list records the errors of failing statements here and keeps the
+// other statements instead of throwing. Used by the LSP mode while resolving.
+extern SemanticErrorException * SemanticErrorSink;

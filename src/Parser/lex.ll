@@ -50,6 +50,7 @@ using namespace std;
 #include "ParserTypes.hpp"                              // for Token
 #include "StatementNode.hpp"                            // for CondCtrl, ForCtrl
 #include "TypedefTable.hpp"
+#include "LSP/Lsp.hpp"                                  // for LSP::addDiagnostic
 // This (generated) header must come late as it is missing includes.
 #include "parser.hh"                                    // generated info
 
@@ -213,18 +214,22 @@ attributes "deprecated"{attr_arg_opt}|"fallthrough"|"nodiscard"{attr_arg_opt}|"m
 		yylineno = lineno;
 		yyfilename = filename;
 	} // if
+	// The directive consumed its newline. Columns restart on every physical line, including a line that cpp
+	// continues after a marker repeating the line number (it splits lines around some macro expansions).
+	column = 0;
 }
 
 				/* preprocessor-style directives */
-^{h_white}*"#"[^\n]*"\n" { RETURN_VAL( DIRECTIVE ); }
+^{h_white}*"#"[^\n]*"\n" { column = 0; RETURN_VAL( DIRECTIVE ); }
 
 				/* ignore C style comments (ALSO HANDLED BY CPP) */
 "/*"			{ BEGIN COMMENT; }
-<COMMENT>.|\n	;
+<COMMENT>.		;
+<COMMENT>\n	{ column = 0; }
 <COMMENT>"*/"	{ BEGIN 0; }
 
 				/* ignore C++ style comments (ALSO HANDLED BY CPP) */
-"//"[^\n]*"\n"	;
+"//"[^\n]*"\n"	{ column = 0; }
 
 				/* ignore whitespace */
 ({h_white}|{v_white})+ { WHITE_RETURN(' '); }			// do nothing
@@ -543,6 +548,10 @@ zero_t			{ RETURN_VAL(ZERO_T); }					// CFA
 
 void yyerror( const char * errmsg ) {
 	SemanticErrorThrow = true;
+	if ( LSP::enabled ) {
+		LSP::addDiagnostic( yylloc, "error", string( errmsg ) + " before token \"" + (yytext[0] == '\0' ? "EOF" : yytext) + '"' );
+		return;
+	} // if
 	cerr << (yyfilename ? yyfilename : "*unknown file*") << ':' << yylineno << ':' << column - yyleng + 1
 		 << ": " << ErrorHelpers::error_str() << errmsg << " before token \"" << (yytext[0] == '\0' ? "EOF" : yytext) << '"' << endl;
 }

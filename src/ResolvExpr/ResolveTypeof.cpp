@@ -27,6 +27,7 @@
 #include "InitTweak/InitTweak.hpp"  // for isConstExpr
 #include "RenameVars.hpp"
 #include "Resolver.hpp"             // for resolveInVoidContext
+#include "LSP/Lsp.hpp"
 #include "SymTab/Mangler.hpp"
 
 namespace ResolvExpr {
@@ -53,6 +54,8 @@ struct ResolveTypeof : public ast::WithShortCircuiting {
 			ast::TypeEnvironment dummy;
 			ast::ptr< ast::Expr > newExpr =
 				resolveInVoidContext( typeofType->expr, context, dummy );
+			// The type replaces the expression, so the LSP dump keeps the resolved expression for its refs.
+			if ( LSP::enabled ) LSP::recordResolvedExpr( newExpr );
 			assert( newExpr->result && ! newExpr->result->isVoid() );
 			newType = newExpr->result;
 		}

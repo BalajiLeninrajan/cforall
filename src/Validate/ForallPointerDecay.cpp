@@ -24,6 +24,7 @@
 #include "Common/ToString.hpp"
 #include "Common/Utility.hpp"
 #include "SymTab/FixFunction.hpp"
+#include "LSP/Lsp.hpp"
 
 namespace Validate {
 
@@ -96,6 +97,9 @@ struct TraitExpander final {
 		for ( const ast::ptr<ast::DeclWithType> & decl : old ) {
 			if ( auto traitInst = dynamic_cast<const ast::TraitInstType *>(
 					decl->get_type() ) ) {
+				if ( LSP::enabled && traitInst->location.isSet() ) {
+					LSP::recordTraitUse( traitInst->location, traitInst->base );
+				} // if
 				auto moreAsserts = expandTrait( traitInst );
 				splice( assertions, moreAsserts );
 			} else {

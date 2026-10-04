@@ -249,13 +249,21 @@ ast::__pass::template resultNstmt<container_t> ast::Pass< core_t >::call_accept(
 				assert( dstmt->decl->unique() );
 				auto & declLink = const_cast< ptr<Decl> & >( dstmt->decl );
 		  if ( !__pass::on_error (core, declLink, 0) ) goto handled;
+				// Keep the failed declaration visible, so later uses of the name are not reported as undeclared too.
+				if ( SemanticErrorSink ) {
+					if ( auto dwt = dstmt->decl.as<DeclWithType>() ) __pass::symtab::addId( core, 0, dwt );
+				}
 			}
 			errors.append( e );
 		  handled:;
 		}
 	}
 	pass_visitor_stats.depth--;
-	errors.throwIfNonEmpty();
+	if ( SemanticErrorSink ) {
+		SemanticErrorSink->append( errors );
+	} else {
+		errors.throwIfNonEmpty();
+	}
 
 	return new_kids;
 }
