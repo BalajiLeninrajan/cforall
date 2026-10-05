@@ -41,6 +41,7 @@
 #include <cstdio>
 #include <sstream>
 #include <stack>
+#include <vector>
 using namespace std;
 
 #include "DeclarationNode.hpp"                          // for DeclarationNode, ...
@@ -56,6 +57,7 @@ using namespace std;
 #include "Common/Iterate.hpp"							// for reverseIterate
 #include "AST/Attribute.hpp"							// for Attribute
 #include "AST/Print.hpp"								// for print
+#include "LSP/Lsp.hpp"									// for LSP::enabled, LSP::addDiagnostic
 
 // lex uses __null in a boolean context, it's fine.
 #ifdef __clang__
@@ -329,19 +331,66 @@ ForCtrl * enumRangeCtrl( ExpressionNode * index_expr, OperKinds compop, Expressi
 	} // if
 } // enumRangeCtrl
 
+// An error reported by the action of an invalid-syntax rule. In LSP mode it is recorded, and the action then uses
+// YYERROR (or, in an error production, carries on) so the parser recovers as from any syntax error. Otherwise it
+// ends translation.
+static void syntaxError( const CodeLocation & location, const string & msg ) {
+	if ( LSP::enabled ) {
+		SemanticErrorThrow = true;
+		LSP::addDiagnostic( location, "error", msg );
+		return;
+	} // if
+	SemanticError( location, msg );
+} // syntaxError
+
 static void IdentifierBeforeIdentifier( string & identifier1, string & identifier2, const char * kind ) {
-	SemanticError( yylloc, "illegal syntax, adjacent identifiers \"%s\" and \"%s\" are not meaningful in an %s.\n"
-				   "Possible cause is misspelled type name or missing generic parameter.",
-				   identifier1.c_str(), identifier2.c_str(), kind );
+	syntaxError( yylloc, "illegal syntax, adjacent identifiers \"" + identifier1 + "\" and \"" + identifier2
+				 + "\" are not meaningful in an " + kind + ".\n"
+				 "Possible cause is misspelled type name or missing generic parameter." );
 } // IdentifierBeforeIdentifier
 
 static void IdentifierBeforeType( string & identifier, const char * kind ) {
-	SemanticError( yylloc, "illegal syntax, identifier \"%s\" cannot appear before a %s.\n"
-				   "Possible cause is misspelled storage/CV qualifier, misspelled typename, or missing generic parameter.",
-				   identifier.c_str(), kind );
+	syntaxError( yylloc, "illegal syntax, identifier \"" + identifier + "\" cannot appear before a " + kind + ".\n"
+				 "Possible cause is misspelled storage/CV qualifier, misspelled typename, or missing generic parameter." );
 } // IdentifierBeforeType
 
 bool forall = false;									// aggregate have one or more forall qualifiers ?
+
+// Syntax error recovery, in LSP mode only: the error productions in statement_decl, statement_list_nodecl and
+// external_definition let the parser carry on after a syntax error, so the rest of the file is still translated.
+// Otherwise they end the parse at the first error, as before they existed. The code the parser skips may have
+// opened typedef scopes without closing them. Blocks, switch bodies and external
+// definitions record the scope depth at their start, and recovery goes back to the innermost one.
+static vector<size_t> recoveryDepths;
+
+static void enterRecoveryScope() {
+	typedefTable.enterScope();
+	recoveryDepths.push_back( typedefTable.depth() );
+} // enterRecoveryScope
+
+static void leaveRecoveryScope() {
+	if ( ! recoveryDepths.empty() ) recoveryDepths.pop_back();
+	typedefTable.leaveScope();
+} // leaveRecoveryScope
+
+static void recoverFromSyntaxError() {
+	if ( ! recoveryDepths.empty() ) typedefTable.restoreDepth( recoveryDepths.back() );
+	forall = false;
+} // recoverFromSyntaxError
+
+// Top-level definitions go into parseTree as soon as they are parsed, so the ones before a syntax error the parser
+// cannot recover from are kept.
+static DeclarationNode * parseTreeLast = nullptr;
+
+static void addToParseTree( DeclarationNode * decls ) {
+	if ( ! decls ) return;
+	if ( parseTree ) {
+		( parseTreeLast ? parseTreeLast : parseTree )->set_last( decls );
+	} else {
+		parseTree = decls;
+	} // if
+	parseTreeLast = decls->get_last();
+} // addToParseTree
 
 // https://www.gnu.org/software/bison/manual/bison.html#Location-Type
 // Empty symbols (e.g., push, attribute_list_opt) sit at the end of the previous token, so they are skipped at both
@@ -548,7 +597,7 @@ if ( N ) {																		\
 %type<decl> enumerator_list enum_type enum_type_nobody enum_key enumerator_type
 %type<init> enumerator_value_opt
 
-%type<decl> external_definition external_definition_list external_definition_list_opt
+%type<decl> external_definition external_definition_list external_definition_list_opt top_definition_list
 
 %type<decl> exception_declaration
 
@@ -702,6 +751,16 @@ push:
 		{ typedefTable.enterScope(); }
 	;
 
+// A push that syntax error recovery returns to (see recoverFromSyntaxError). Its scope is left by recovery_pop, or by
+// the action of a rule ending in '}': a pop before the '}' could run before an error in the same place is found.
+recovery_push:
+		{ enterRecoveryScope(); }
+	;
+
+recovery_pop:
+		{ leaveRecoveryScope(); }
+	;
+
 pop:
 		{ typedefTable.leaveScope(); }
 	;
@@ -788,17 +847,17 @@ primary_expression:
 	// | RESUME '(' comma_expression ')' compound_statement
 	//   	{ SemanticError( @$, "Resume expression is currently unimplemented." ); $$ = nullptr; }
 	| IDENTIFIER IDENTIFIER								// invalid syntax rule
-		{ IdentifierBeforeIdentifier( *$1.str, *$2.str, "expression" ); $$ = nullptr; }
+		{ IdentifierBeforeIdentifier( *$1.str, *$2.str, "expression" ); YYERROR; }
 	| IDENTIFIER type_qualifier							// invalid syntax rule
-		{ IdentifierBeforeType( *$1.str, "type qualifier" ); $$ = nullptr; }
+		{ IdentifierBeforeType( *$1.str, "type qualifier" ); YYERROR; }
 	| IDENTIFIER storage_class							// invalid syntax rule
-		{ IdentifierBeforeType( *$1.str, "storage class" ); $$ = nullptr; }
+		{ IdentifierBeforeType( *$1.str, "storage class" ); YYERROR; }
 	| IDENTIFIER basic_type_name						// invalid syntax rule
-		{ IdentifierBeforeType( *$1.str, "type" ); $$ = nullptr; }
+		{ IdentifierBeforeType( *$1.str, "type" ); YYERROR; }
 	| IDENTIFIER TYPEDEFname							// invalid syntax rule
-		{ IdentifierBeforeType( *$1.str, "type" ); $$ = nullptr; }
+		{ IdentifierBeforeType( *$1.str, "type" ); YYERROR; }
 	| IDENTIFIER TYPEGENname							// invalid syntax rule
-		{ IdentifierBeforeType( *$1.str, "type" ); $$ = nullptr; }
+		{ IdentifierBeforeType( *$1.str, "type" ); YYERROR; }
 	;
 
 generic_assoc_list:										// C11
@@ -1300,11 +1359,11 @@ labelled_statement:
 compound_statement:
 	'{' '}'
 		{ $$ = new StatementNode( build_compound( @$, (StatementNode *)0 ) ); }
-	| '{' push
+	| '{' recovery_push
 	  local_label_declaration_opt						// GCC, local labels appear at start of block
 	  statement_decl_list								// C99, intermix declarations and statements
-	  pop '}'
-		{ $$ = new StatementNode( build_compound( @$, $4 ) ); }
+	  '}'
+		{ leaveRecoveryScope(); $$ = new StatementNode( build_compound( @$, $4 ) ); }
 	;
 
 statement_decl_list:									// C99
@@ -1324,6 +1383,8 @@ statement_decl:
 		{ distAttr( $1, $3 ); distExt( $3 ); $$ = new StatementNode( setExtent( $3, @3 ) ); }
 	| attribute_list_opt statement						// FIX ME!
 		{ $$ = $2->addQualifiers( $1 ); }
+	| error												// syntax error recovery: resume at the next statement
+		{ if ( ! LSP::enabled ) YYABORT; recoverFromSyntaxError(); $$ = new StatementNode( build_expr( @$, nullptr ) ); }
 	;
 
 statement_list_nodecl:
@@ -1332,8 +1393,12 @@ statement_list_nodecl:
 	| statement_list_nodecl attribute_list_opt statement
 		{ assert( $1 ); $1->set_last( $3->addQualifiers( $2 ) ); $$ = $1; }	// FIX ME!
 	| statement_list_nodecl error						// invalid syntax rule
-		{ SemanticError( @$, "illegal syntax, declarations only allowed at the start of the switch body,"
-						 " i.e., after the '{'." ); $$ = nullptr; }
+		{
+			syntaxError( @$, "illegal syntax, declarations only allowed at the start of the switch body,"
+						 " i.e., after the '{'." );
+			recoverFromSyntaxError();
+			$$ = $1;
+		}
 	;
 
 expression_statement:									// expression or null statement
@@ -1373,8 +1438,9 @@ selection_statement:
 		{ $$ = new StatementNode( build_if( @$, $3, maybe_build_compound( @$, $5 ), maybe_build_compound( @$, $7 ) ) ); }
 	| SWITCH '(' comma_expression ')' case_clause
 		{ $$ = new StatementNode( build_switch( @$, true, $3, $5 ) ); }
-	| SWITCH '(' comma_expression ')' '{' push declaration_list_opt switch_clause_list_opt pop '}' // CFA
+	| SWITCH '(' comma_expression ')' '{' recovery_push declaration_list_opt switch_clause_list_opt '}' // CFA
 		{
+			leaveRecoveryScope();
 			StatementNode *sw = new StatementNode( build_switch( @$, true, $3, $8 ) );
 			// The semantics of the declaration list is changed to include associated initialization, which is performed
 			// *before* the transfer to the appropriate case clause by hoisting the declarations into a compound
@@ -1387,8 +1453,9 @@ selection_statement:
 		{ SemanticError( @$, "synatx error, declarations can only appear before the list of case clauses." ); $$ = nullptr; }
 	| CHOOSE '(' comma_expression ')' case_clause		// CFA
 		{ $$ = new StatementNode( build_switch( @$, false, $3, $5 ) ); }
-	| CHOOSE '(' comma_expression ')' '{' push declaration_list_opt switch_clause_list_opt pop '}' // CFA
+	| CHOOSE '(' comma_expression ')' '{' recovery_push declaration_list_opt switch_clause_list_opt '}' // CFA
 		{
+			leaveRecoveryScope();
 			StatementNode *sw = new StatementNode( build_switch( @$, false, $3, $8 ) );
 			$$ = $7 ? new StatementNode( build_compound( @$, (new StatementNode( $7 ))->set_last( sw ) ) ) : sw;
 		}
@@ -3332,8 +3399,19 @@ trait_declaring_list:									// CFA
 
 translation_unit:
 	// empty, input file
-	| external_definition_list
-		{ parseTree = parseTree ? parseTree->set_last( $1 ) : $1; }
+	| top_definition_list
+	;
+
+top_definition_list:									// adds each definition to parseTree as it is parsed
+	attribute_list_opt recovery_push external_definition recovery_pop
+		{ distAttr( $1, $3 ); addToParseTree( $3 ); $$ = $3; }
+	| top_definition_list attribute_list_opt recovery_push external_definition recovery_pop
+		{
+			distAttr( $2, $4 );
+			if ( ! $1 && $4 ) $4->addQualifiers( $2 );
+			addToParseTree( $4 );
+			$$ = $1 ? $1 : $4;
+		}
 	;
 
 external_definition_list_opt:
@@ -3343,9 +3421,9 @@ external_definition_list_opt:
 	;
 
 external_definition_list:
-	attribute_list_opt push external_definition pop
+	attribute_list_opt recovery_push external_definition recovery_pop
 		{ distAttr( $1, $3 ); $$ = $3; }
-	| external_definition_list attribute_list_opt push external_definition pop
+	| external_definition_list attribute_list_opt recovery_push external_definition recovery_pop
 		{ distAttr( $2, $4 ); $$ = $1 ? $1->set_last( $4 ) : $4->addQualifiers( $2 ); }
 	;
 
@@ -3373,17 +3451,17 @@ external_definition:
 			}
 		}
 	| IDENTIFIER IDENTIFIER
-		{ IdentifierBeforeIdentifier( *$1.str, *$2.str, " declaration" ); $$ = nullptr; }
+		{ IdentifierBeforeIdentifier( *$1.str, *$2.str, " declaration" ); YYERROR; }
 	| IDENTIFIER type_qualifier							// invalid syntax rule
-		{ IdentifierBeforeType( *$1.str, "type qualifier" ); $$ = nullptr; }
+		{ IdentifierBeforeType( *$1.str, "type qualifier" ); YYERROR; }
 	| IDENTIFIER storage_class							// invalid syntax rule
-		{ IdentifierBeforeType( *$1.str, "storage class" ); $$ = nullptr; }
+		{ IdentifierBeforeType( *$1.str, "storage class" ); YYERROR; }
 	| IDENTIFIER basic_type_name						// invalid syntax rule
-		{ IdentifierBeforeType( *$1.str, "type" ); $$ = nullptr; }
+		{ IdentifierBeforeType( *$1.str, "type" ); YYERROR; }
 	| IDENTIFIER TYPEDEFname							// invalid syntax rule
-		{ IdentifierBeforeType( *$1.str, "type" ); $$ = nullptr; }
+		{ IdentifierBeforeType( *$1.str, "type" ); YYERROR; }
 	| IDENTIFIER TYPEGENname							// invalid syntax rule
-		{ IdentifierBeforeType( *$1.str, "type" ); $$ = nullptr; }
+		{ IdentifierBeforeType( *$1.str, "type" ); YYERROR; }
 	| external_function_definition
 	| EXTENSION external_definition						// GCC, multiple __extension__ allowed, meaning unknown
 		{
@@ -3456,6 +3534,10 @@ external_definition:
 		}
 	| ';'												// empty declaration
 		{ $$ = nullptr; }
+	| error												// syntax error recovery: resume at the next declaration
+		{ if ( ! LSP::enabled ) YYABORT; recoverFromSyntaxError(); $$ = nullptr; }
+	| error compound_statement							// skip the body of a function whose declarator is broken
+		{ if ( ! LSP::enabled ) YYABORT; recoverFromSyntaxError(); $$ = nullptr; }
 	;
 
 external_function_definition:

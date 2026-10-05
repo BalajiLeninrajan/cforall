@@ -116,6 +116,11 @@ void TypedefTable::leaveScope() {
 	kindTable.endScope();
 } // TypedefTable::leaveScope
 
+void TypedefTable::restoreDepth( size_t depth ) {
+	while ( kindTable.currentScope() > depth ) leaveScope();
+	while ( kindTable.currentScope() < depth ) enterScope();
+} // TypedefTable::restoreDepth
+
 void TypedefTable::up( bool forall ) {
 	level += 1;
 	kindTable.getNote( kindTable.currentScope() ) = (Note){ level, forall || getEnclForall() };

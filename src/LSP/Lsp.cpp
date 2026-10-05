@@ -66,6 +66,7 @@ struct Diagnostic {
 
 std::vector<Diagnostic> diagnostics;
 bool errorSeen = false;
+bool afterSyntaxErrors = false;							// later diagnostics are dropped
 
 // ---------------------------------------------------------------------------
 // Uses recorded before Resolve erases them
@@ -1497,6 +1498,7 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards,
 // ---------------------------------------------------------------------------
 
 void addDiagnostic( const CodeLocation & location, const char * severity, const std::string & text ) {
+	if ( afterSyntaxErrors ) return;
 	if ( std::string( severity ) == "error" ) errorSeen = true;
 	diagnostics.push_back( { location, severity, text } );
 }
@@ -1513,6 +1515,14 @@ void addInternalError( const std::string & text ) {
 
 bool hasErrors() {
 	return errorSeen;
+}
+
+void syntaxErrorsFound() {
+	afterSyntaxErrors = true;
+}
+
+bool syntaxErrors() {
+	return afterSyntaxErrors;
 }
 
 void recordTypedef( const ast::TypedefDecl * decl, bool global ) {

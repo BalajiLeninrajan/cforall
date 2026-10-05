@@ -19,7 +19,8 @@
 #include "Common/CodeLocationTools.hpp"     // for forceFillCodeLocations
 #include "Parser/DeclarationNode.hpp"       // for DeclarationNode, buildList
 #include "Parser/TypedefTable.hpp"          // for TypedefTable
-#include "LSP/Lsp.hpp"                    // for LSP::enabled
+#include "Common/ErrorObjects.hpp"         // for SemanticErrorException
+#include "LSP/Lsp.hpp"                      // for LSP::enabled, LSP::syntaxErrorsFound
 
 // Variables global to the parsing code.
 ast::Linkage::Spec linkage = ast::Linkage::Cforall;
@@ -38,11 +39,25 @@ void parse( FILE * input, ast::Linkage::Spec linkage, bool alwaysExit, bool coun
 	yylineno = 1;
 	yypline = countLines ? 1 : 0;
 
+	if ( LSP::enabled && ! alwaysExit ) {
+		// The parser records syntax errors and recovers from them where it can. An error it cannot recover from, or
+		// one an action throws, ends the parse, but parseTree keeps the definitions parsed before it. Translation
+		// goes on with what was parsed.
+		int parseStatus = 0;
+		try {
+			parseStatus = yyparse();
+		} catch ( SemanticErrorException & e ) {
+			LSP::addErrors( e );
+			parseStatus = 1;
+		} // try
+		fclose( input );
+		if ( parseStatus != 0 || LSP::hasErrors() ) LSP::syntaxErrorsFound();
+		return;
+	} // if
+
 	int parseStatus = yyparse();
 	fclose( input );
 	if ( alwaysExit || parseStatus != 0 ) {
-		// In LSP mode the syntax errors are already recorded; unwind so the dump is written.
-		if ( LSP::enabled && ! alwaysExit ) throw SemanticErrorException();
 		exit( parseStatus );
 	} // if
 } // parse

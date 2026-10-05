@@ -331,8 +331,9 @@ int main( int argc, char * argv[] ) {
 			Stats::Time::StartBlock( "LSP Snapshot" );
 			LSP::snapshot( transUnit );
 			Stats::Time::StopBlock();
-			if ( ! resolveErrors.isEmpty() ) {
-				// The unresolved parts would trip the later passes.
+			if ( ! resolveErrors.isEmpty() || LSP::syntaxErrors() ) {
+				// The unresolved parts would trip the later passes. After a syntax error their diagnostics would
+				// be dropped anyway.
 				return lspFinish( false );
 			} // if
 			LSP::resolved = true;

@@ -48,6 +48,11 @@ void addErrors( const SemanticErrorException & errors );
 // A translator failure that is not a user error (unexpected exception).
 void addInternalError( const std::string & text );
 bool hasErrors();
+// Called after a parse that had syntax errors. Translation goes on with what was parsed, so the dump has the
+// declarations and references of the rest of the file, but later diagnostics are dropped: most would be about the
+// code the parser skipped.
+void syntaxErrorsFound();
+bool syntaxErrors();
 
 // Typedef and trait uses disappear before Resolve (typedefs are replaced by their
 // base types, trait instances are expanded into assertions), so the passes

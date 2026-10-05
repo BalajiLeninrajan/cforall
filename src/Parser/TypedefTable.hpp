@@ -42,6 +42,11 @@ class TypedefTable {
 	void enterScope();
 	void leaveScope();
 
+	// The number of open scopes. After a syntax error the parser skips code that may have opened scopes without
+	// closing them; restoreDepth goes back to the depth recorded where it resumes.
+	size_t depth() const { return kindTable.currentScope(); }
+	void restoreDepth( size_t depth );
+
 	void up( bool );
 	void down();
 
