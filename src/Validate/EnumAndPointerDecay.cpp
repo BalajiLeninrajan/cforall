@@ -19,6 +19,7 @@
 #include "AST/Decl.hpp"
 #include "AST/Pass.hpp"
 #include "AST/Type.hpp"
+#include "LSP/Lsp.hpp"
 #include "SymTab/FixFunction.hpp"
 #include "Validate/NoIdSymbolTable.hpp"
 
@@ -98,6 +99,9 @@ void fixFunctionList( CodeLocation const & location, bool isVarArgs,
 
 ast::FunctionDecl const * EnumAndPointerDecayCore::previsit(
 		ast::FunctionDecl const * decl ) {
+	if ( LSP::enabled ) {
+		for ( const ast::DeclWithType * param : decl->params ) LSP::recordParam( param );
+	}
 	auto mut = ast::mutate( decl );
 	ast::ArgumentFlag isVarArgs = mut->type->isVarArgs;
 	// It seems fixFunction (via fixFunctionList) does the pointer decay part.

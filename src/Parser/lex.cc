@@ -3600,8 +3600,10 @@ char *yytext;
 	column += yyleng; \
 	yylloc.last_column = column; \
 	yylloc.last_line = yylineno; \
-	yylloc.filename = yyfilename ? yyfilename : "";
+	yylloc.filename = yyfilename ? yyfilename : ""; \
+	setPline( yylloc, yytext, yyleng );
 unsigned int column = 0;								// position of the end of the last token parsed
+int yypline = 0;										// line of the next character in the input file, 0 => not counted
 
 #include <string>
 #include <cstdio>										// FILENAME_MAX
@@ -3620,6 +3622,20 @@ using namespace std;
 #include "parser.hh"                                    // generated info
 
 string * build_postfix_name( string * name );
+
+// Records the token's lines in the input file itself, which line markers do not change (CodeLocation::first_pline).
+static void setPline( CodeLocation & loc, const char * text, long length ) {
+	if ( yypline <= 0 ) {
+		loc.first_pline = loc.last_pline = -1;
+		return;
+	} // if
+	loc.first_pline = loc.last_pline = yypline;
+	for ( long i = 0; i < length; i += 1 ) {
+		if ( text[i] != '\n' ) continue;
+		yypline += 1;
+		if ( i + 1 < length ) loc.last_pline = yypline;	// a newline ending the token is not part of a later line
+	} // for
+}
 
 char * yyfilename;
 string * strtext;										// accumulate parts of character and string constant value
@@ -3662,8 +3678,8 @@ void rm_underscore() {
 
 // Stop warning due to incorrectly generated flex code.
 #pragma GCC diagnostic ignored "-Wsign-compare"
-#line 3665 "Parser/lex.cc"
-#line 109 "Parser/lex.ll"
+#line 3681 "Parser/lex.cc"
+#line 125 "Parser/lex.ll"
 				// CFA: digit separator characters '_', ' ', and C23 '\''
 				// numeric constants
 				// CFA: explicit l8/l16/l32/l64/l128, char 'hh', short 'h', int 'n'
@@ -3680,7 +3696,7 @@ void rm_underscore() {
 
 
 
-#line 3683 "Parser/lex.cc"
+#line 3699 "Parser/lex.cc"
 
 #define INITIAL 0
 #define COMMENT 1
@@ -3901,10 +3917,10 @@ YY_DECL
 		}
 
 	{
-#line 197 "Parser/lex.ll"
+#line 213 "Parser/lex.ll"
 
 				/* line directives */
-#line 3907 "Parser/lex.cc"
+#line 3923 "Parser/lex.cc"
 
 	while ( /*CONSTCOND*/1 )		/* loops until end-of-file is reached */
 		{
@@ -3975,7 +3991,7 @@ do_action:	/* This label is used only to access EOF actions. */
 case 1:
 /* rule 1 can match eol */
 YY_RULE_SETUP
-#line 199 "Parser/lex.ll"
+#line 215 "Parser/lex.ll"
 {
 	/* " stop editor highlighting */
 	static char filename[FILENAME_MAX];					// temporarily store current source-file name
@@ -4004,766 +4020,766 @@ YY_RULE_SETUP
 case 2:
 /* rule 2 can match eol */
 YY_RULE_SETUP
-#line 224 "Parser/lex.ll"
+#line 240 "Parser/lex.ll"
 { column = 0; RETURN_VAL( DIRECTIVE ); }
 	YY_BREAK
 /* ignore C style comments (ALSO HANDLED BY CPP) */
 case 3:
 YY_RULE_SETUP
-#line 227 "Parser/lex.ll"
+#line 243 "Parser/lex.ll"
 { BEGIN COMMENT; }
 	YY_BREAK
 case 4:
 YY_RULE_SETUP
-#line 228 "Parser/lex.ll"
+#line 244 "Parser/lex.ll"
 ;
 	YY_BREAK
 case 5:
 /* rule 5 can match eol */
 YY_RULE_SETUP
-#line 229 "Parser/lex.ll"
+#line 245 "Parser/lex.ll"
 { column = 0; }
 	YY_BREAK
 case 6:
 YY_RULE_SETUP
-#line 230 "Parser/lex.ll"
+#line 246 "Parser/lex.ll"
 { BEGIN 0; }
 	YY_BREAK
 /* ignore C++ style comments (ALSO HANDLED BY CPP) */
 case 7:
 /* rule 7 can match eol */
 YY_RULE_SETUP
-#line 233 "Parser/lex.ll"
+#line 249 "Parser/lex.ll"
 { column = 0; }
 	YY_BREAK
 /* ignore whitespace */
 case 8:
 YY_RULE_SETUP
-#line 236 "Parser/lex.ll"
+#line 252 "Parser/lex.ll"
 { WHITE_RETURN(' '); }			// do nothing
 	YY_BREAK
 case 9:
 /* rule 9 can match eol */
 YY_RULE_SETUP
-#line 237 "Parser/lex.ll"
+#line 253 "Parser/lex.ll"
 { NEWLINE_RETURN(); }					// reset column counter
 	YY_BREAK
 /* keywords */
 case 10:
 YY_RULE_SETUP
-#line 240 "Parser/lex.ll"
+#line 256 "Parser/lex.ll"
 { KEYWORD_RETURN(ALIGNAS); }			// CFA
 	YY_BREAK
 case 11:
 YY_RULE_SETUP
-#line 241 "Parser/lex.ll"
+#line 257 "Parser/lex.ll"
 { KEYWORD_RETURN(ALIGNAS); }			// C11
 	YY_BREAK
 case 12:
 YY_RULE_SETUP
-#line 242 "Parser/lex.ll"
+#line 258 "Parser/lex.ll"
 { KEYWORD_RETURN(ALIGNOF); }			// C23
 	YY_BREAK
 case 13:
 YY_RULE_SETUP
-#line 243 "Parser/lex.ll"
+#line 259 "Parser/lex.ll"
 { KEYWORD_RETURN(ALIGNOF); }			// C11
 	YY_BREAK
 case 14:
 YY_RULE_SETUP
-#line 244 "Parser/lex.ll"
+#line 260 "Parser/lex.ll"
 { KEYWORD_RETURN(__ALIGNOF); }			// GCC
 	YY_BREAK
 case 15:
 YY_RULE_SETUP
-#line 245 "Parser/lex.ll"
+#line 261 "Parser/lex.ll"
 { KEYWORD_RETURN(__ALIGNOF); }			// GCC
 	YY_BREAK
 case 16:
 YY_RULE_SETUP
-#line 246 "Parser/lex.ll"
+#line 262 "Parser/lex.ll"
 { QKEYWORD_RETURN(WAND); }				// CFA
 	YY_BREAK
 case 17:
 YY_RULE_SETUP
-#line 247 "Parser/lex.ll"
+#line 263 "Parser/lex.ll"
 { KEYWORD_RETURN(ASM); }
 	YY_BREAK
 case 18:
 YY_RULE_SETUP
-#line 248 "Parser/lex.ll"
+#line 264 "Parser/lex.ll"
 { KEYWORD_RETURN(ASM); }				// GCC
 	YY_BREAK
 case 19:
 YY_RULE_SETUP
-#line 249 "Parser/lex.ll"
+#line 265 "Parser/lex.ll"
 { KEYWORD_RETURN(ASM); }				// GCC
 	YY_BREAK
 case 20:
 YY_RULE_SETUP
-#line 250 "Parser/lex.ll"
+#line 266 "Parser/lex.ll"
 { KEYWORD_RETURN(ATOMIC); }				// C11
 	YY_BREAK
 case 21:
 YY_RULE_SETUP
-#line 251 "Parser/lex.ll"
+#line 267 "Parser/lex.ll"
 { KEYWORD_RETURN(ATTRIBUTE); }			// GCC
 	YY_BREAK
 case 22:
 YY_RULE_SETUP
-#line 252 "Parser/lex.ll"
+#line 268 "Parser/lex.ll"
 { KEYWORD_RETURN(ATTRIBUTE); }			// GCC
 	YY_BREAK
 case 23:
 YY_RULE_SETUP
-#line 253 "Parser/lex.ll"
+#line 269 "Parser/lex.ll"
 { KEYWORD_RETURN(AUTO); }
 	YY_BREAK
 case 24:
 YY_RULE_SETUP
-#line 254 "Parser/lex.ll"
+#line 270 "Parser/lex.ll"
 { KEYWORD_RETURN(AUTO_TYPE); }
 	YY_BREAK
 case 25:
 YY_RULE_SETUP
-#line 255 "Parser/lex.ll"
+#line 271 "Parser/lex.ll"
 { KEYWORD_RETURN(BASETYPEOF); }			// CFA
 	YY_BREAK
 case 26:
 YY_RULE_SETUP
-#line 256 "Parser/lex.ll"
+#line 272 "Parser/lex.ll"
 { KEYWORD_RETURN(BOOL); }				// C99
 	YY_BREAK
 case 27:
 YY_RULE_SETUP
-#line 257 "Parser/lex.ll"
+#line 273 "Parser/lex.ll"
 { KEYWORD_RETURN(BREAK); }
 	YY_BREAK
 case 28:
 YY_RULE_SETUP
-#line 258 "Parser/lex.ll"
+#line 274 "Parser/lex.ll"
 { KEYWORD_RETURN(CASE); }
 	YY_BREAK
 case 29:
 YY_RULE_SETUP
-#line 259 "Parser/lex.ll"
+#line 275 "Parser/lex.ll"
 { QKEYWORD_RETURN(CATCH); }				// CFA
 	YY_BREAK
 case 30:
 YY_RULE_SETUP
-#line 260 "Parser/lex.ll"
+#line 276 "Parser/lex.ll"
 { QKEYWORD_RETURN(CATCHRESUME); }		// CFA
 	YY_BREAK
 case 31:
 YY_RULE_SETUP
-#line 261 "Parser/lex.ll"
+#line 277 "Parser/lex.ll"
 { KEYWORD_RETURN(CHAR); }
 	YY_BREAK
 case 32:
 YY_RULE_SETUP
-#line 262 "Parser/lex.ll"
+#line 278 "Parser/lex.ll"
 { KEYWORD_RETURN(CHOOSE); }				// CFA
 	YY_BREAK
 case 33:
 YY_RULE_SETUP
-#line 263 "Parser/lex.ll"
+#line 279 "Parser/lex.ll"
 { KEYWORD_RETURN(COERCE); }				// CFA
 	YY_BREAK
 case 34:
 YY_RULE_SETUP
-#line 264 "Parser/lex.ll"
+#line 280 "Parser/lex.ll"
 { KEYWORD_RETURN(CORUN); }				// CFA
 	YY_BREAK
 case 35:
 YY_RULE_SETUP
-#line 265 "Parser/lex.ll"
+#line 281 "Parser/lex.ll"
 { KEYWORD_RETURN(COFOR); }				// CFA
 	YY_BREAK
 case 36:
 YY_RULE_SETUP
-#line 266 "Parser/lex.ll"
+#line 282 "Parser/lex.ll"
 { KEYWORD_RETURN(COMPLEX); }			// C99
 	YY_BREAK
 case 37:
 YY_RULE_SETUP
-#line 267 "Parser/lex.ll"
+#line 283 "Parser/lex.ll"
 { KEYWORD_RETURN(COMPLEX); }			// GCC
 	YY_BREAK
 case 38:
 YY_RULE_SETUP
-#line 268 "Parser/lex.ll"
+#line 284 "Parser/lex.ll"
 { KEYWORD_RETURN(COMPLEX); }			// GCC
 	YY_BREAK
 case 39:
 YY_RULE_SETUP
-#line 269 "Parser/lex.ll"
+#line 285 "Parser/lex.ll"
 { KEYWORD_RETURN(CONST); }
 	YY_BREAK
 case 40:
 YY_RULE_SETUP
-#line 270 "Parser/lex.ll"
+#line 286 "Parser/lex.ll"
 { KEYWORD_RETURN(CONST); }				// GCC
 	YY_BREAK
 case 41:
 YY_RULE_SETUP
-#line 271 "Parser/lex.ll"
+#line 287 "Parser/lex.ll"
 { KEYWORD_RETURN(CONST); }				// GCC
 	YY_BREAK
 case 42:
 YY_RULE_SETUP
-#line 272 "Parser/lex.ll"
+#line 288 "Parser/lex.ll"
 { KEYWORD_RETURN(CONTINUE); }
 	YY_BREAK
 case 43:
 YY_RULE_SETUP
-#line 273 "Parser/lex.ll"
+#line 289 "Parser/lex.ll"
 { KEYWORD_RETURN(COROUTINE); }			// CFA
 	YY_BREAK
 case 44:
 YY_RULE_SETUP
-#line 274 "Parser/lex.ll"
+#line 290 "Parser/lex.ll"
 { KEYWORD_RETURN(DECIMAL32); }			// GCC
 	YY_BREAK
 case 45:
 YY_RULE_SETUP
-#line 275 "Parser/lex.ll"
+#line 291 "Parser/lex.ll"
 { KEYWORD_RETURN(DECIMAL64); }			// GCC
 	YY_BREAK
 case 46:
 YY_RULE_SETUP
-#line 276 "Parser/lex.ll"
+#line 292 "Parser/lex.ll"
 { KEYWORD_RETURN(DECIMAL128); }			// GCC
 	YY_BREAK
 case 47:
 YY_RULE_SETUP
-#line 277 "Parser/lex.ll"
+#line 293 "Parser/lex.ll"
 { KEYWORD_RETURN(DEFAULT); }
 	YY_BREAK
 case 48:
 YY_RULE_SETUP
-#line 278 "Parser/lex.ll"
+#line 294 "Parser/lex.ll"
 { KEYWORD_RETURN(DISABLE); }			// CFA
 	YY_BREAK
 case 49:
 YY_RULE_SETUP
-#line 279 "Parser/lex.ll"
+#line 295 "Parser/lex.ll"
 { KEYWORD_RETURN(DO); }
 	YY_BREAK
 case 50:
 YY_RULE_SETUP
-#line 280 "Parser/lex.ll"
+#line 296 "Parser/lex.ll"
 { KEYWORD_RETURN(DOUBLE); }
 	YY_BREAK
 case 51:
 YY_RULE_SETUP
-#line 281 "Parser/lex.ll"
+#line 297 "Parser/lex.ll"
 { KEYWORD_RETURN(DTYPE); }				// CFA
 	YY_BREAK
 case 52:
 YY_RULE_SETUP
-#line 282 "Parser/lex.ll"
+#line 298 "Parser/lex.ll"
 { KEYWORD_RETURN(ELSE); }
 	YY_BREAK
 case 53:
 YY_RULE_SETUP
-#line 283 "Parser/lex.ll"
+#line 299 "Parser/lex.ll"
 { KEYWORD_RETURN(ENABLE); }				// CFA
 	YY_BREAK
 case 54:
 YY_RULE_SETUP
-#line 284 "Parser/lex.ll"
+#line 300 "Parser/lex.ll"
 { KEYWORD_RETURN(ENUM); }
 	YY_BREAK
 case 55:
 YY_RULE_SETUP
-#line 285 "Parser/lex.ll"
+#line 301 "Parser/lex.ll"
 { KEYWORD_RETURN(EXCEPTION); }			// CFA
 	YY_BREAK
 case 56:
 YY_RULE_SETUP
-#line 286 "Parser/lex.ll"
+#line 302 "Parser/lex.ll"
 { KEYWORD_RETURN(EXTENSION); }			// GCC
 	YY_BREAK
 case 57:
 YY_RULE_SETUP
-#line 287 "Parser/lex.ll"
+#line 303 "Parser/lex.ll"
 { KEYWORD_RETURN(EXTERN); }
 	YY_BREAK
 case 58:
 YY_RULE_SETUP
-#line 288 "Parser/lex.ll"
+#line 304 "Parser/lex.ll"
 { KEYWORD_RETURN(FALLTHROUGH); }		// CFA
 	YY_BREAK
 case 59:
 YY_RULE_SETUP
-#line 289 "Parser/lex.ll"
+#line 305 "Parser/lex.ll"
 { QKEYWORD_RETURN(FINALLY); }			// CFA
 	YY_BREAK
 case 60:
 YY_RULE_SETUP
-#line 290 "Parser/lex.ll"
+#line 306 "Parser/lex.ll"
 { QKEYWORD_RETURN(FIXUP); }				// CFA
 	YY_BREAK
 case 61:
 YY_RULE_SETUP
-#line 291 "Parser/lex.ll"
+#line 307 "Parser/lex.ll"
 { KEYWORD_RETURN(FLOAT); }
 	YY_BREAK
 case 62:
 YY_RULE_SETUP
-#line 292 "Parser/lex.ll"
+#line 308 "Parser/lex.ll"
 { KEYWORD_RETURN(FLOAT80); }			// GCC
 	YY_BREAK
 case 63:
 YY_RULE_SETUP
-#line 293 "Parser/lex.ll"
+#line 309 "Parser/lex.ll"
 { KEYWORD_RETURN(FLOAT80); }			// GCC
 	YY_BREAK
 case 64:
 YY_RULE_SETUP
-#line 294 "Parser/lex.ll"
+#line 310 "Parser/lex.ll"
 { KEYWORD_RETURN(uuFLOAT128); }			// GCC
 	YY_BREAK
 case 65:
 YY_RULE_SETUP
-#line 295 "Parser/lex.ll"
+#line 311 "Parser/lex.ll"
 { KEYWORD_RETURN(uuFLOAT128); }			// GCC
 	YY_BREAK
 case 66:
 YY_RULE_SETUP
-#line 296 "Parser/lex.ll"
+#line 312 "Parser/lex.ll"
 { FLOATXX(FLOAT16); }					// GCC
 	YY_BREAK
 case 67:
 YY_RULE_SETUP
-#line 297 "Parser/lex.ll"
+#line 313 "Parser/lex.ll"
 { FLOATXX(FLOAT32); }					// GCC
 	YY_BREAK
 case 68:
 YY_RULE_SETUP
-#line 298 "Parser/lex.ll"
+#line 314 "Parser/lex.ll"
 { FLOATXX(FLOAT32X); }					// GCC
 	YY_BREAK
 case 69:
 YY_RULE_SETUP
-#line 299 "Parser/lex.ll"
+#line 315 "Parser/lex.ll"
 { FLOATXX(FLOAT64); }					// GCC
 	YY_BREAK
 case 70:
 YY_RULE_SETUP
-#line 300 "Parser/lex.ll"
+#line 316 "Parser/lex.ll"
 { FLOATXX(FLOAT64X); }					// GCC
 	YY_BREAK
 case 71:
 YY_RULE_SETUP
-#line 301 "Parser/lex.ll"
+#line 317 "Parser/lex.ll"
 { FLOATXX(FLOAT128); }					// GCC
 	YY_BREAK
 case 72:
 YY_RULE_SETUP
-#line 302 "Parser/lex.ll"
+#line 318 "Parser/lex.ll"
 { FLOATXX(FLOAT128X); }					// GCC
 	YY_BREAK
 case 73:
 YY_RULE_SETUP
-#line 303 "Parser/lex.ll"
+#line 319 "Parser/lex.ll"
 { KEYWORD_RETURN(FOR); }
 	YY_BREAK
 case 74:
 YY_RULE_SETUP
-#line 304 "Parser/lex.ll"
+#line 320 "Parser/lex.ll"
 { KEYWORD_RETURN(FORALL); }				// CFA
 	YY_BREAK
 case 75:
 YY_RULE_SETUP
-#line 305 "Parser/lex.ll"
+#line 321 "Parser/lex.ll"
 { KEYWORD_RETURN(FORTRAN); }
 	YY_BREAK
 case 76:
 YY_RULE_SETUP
-#line 306 "Parser/lex.ll"
+#line 322 "Parser/lex.ll"
 { KEYWORD_RETURN(FTYPE); }				// CFA
 	YY_BREAK
 case 77:
 YY_RULE_SETUP
-#line 307 "Parser/lex.ll"
+#line 323 "Parser/lex.ll"
 { KEYWORD_RETURN(GENERATOR); }			// CFA
 	YY_BREAK
 case 78:
 YY_RULE_SETUP
-#line 308 "Parser/lex.ll"
+#line 324 "Parser/lex.ll"
 { KEYWORD_RETURN(GENERIC); }			// C11
 	YY_BREAK
 case 79:
 YY_RULE_SETUP
-#line 309 "Parser/lex.ll"
+#line 325 "Parser/lex.ll"
 { KEYWORD_RETURN(GOTO); }
 	YY_BREAK
 case 80:
 YY_RULE_SETUP
-#line 310 "Parser/lex.ll"
+#line 326 "Parser/lex.ll"
 { KEYWORD_RETURN(IF); }
 	YY_BREAK
 case 81:
 YY_RULE_SETUP
-#line 311 "Parser/lex.ll"
+#line 327 "Parser/lex.ll"
 { KEYWORD_RETURN(IMAGINARY); }			// C99
 	YY_BREAK
 case 82:
 YY_RULE_SETUP
-#line 312 "Parser/lex.ll"
+#line 328 "Parser/lex.ll"
 { KEYWORD_RETURN(IMAGINARY); }			// GCC
 	YY_BREAK
 case 83:
 YY_RULE_SETUP
-#line 313 "Parser/lex.ll"
+#line 329 "Parser/lex.ll"
 { KEYWORD_RETURN(IMAGINARY); }			// GCC
 	YY_BREAK
 case 84:
 YY_RULE_SETUP
-#line 314 "Parser/lex.ll"
+#line 330 "Parser/lex.ll"
 { KEYWORD_RETURN(INLINE); }				// C99
 	YY_BREAK
 case 85:
 YY_RULE_SETUP
-#line 315 "Parser/lex.ll"
+#line 331 "Parser/lex.ll"
 { KEYWORD_RETURN(INLINE); }				// GCC
 	YY_BREAK
 case 86:
 YY_RULE_SETUP
-#line 316 "Parser/lex.ll"
+#line 332 "Parser/lex.ll"
 { KEYWORD_RETURN(INLINE); }				// GCC
 	YY_BREAK
 case 87:
 YY_RULE_SETUP
-#line 317 "Parser/lex.ll"
+#line 333 "Parser/lex.ll"
 { KEYWORD_RETURN(INT); }
 	YY_BREAK
 case 88:
 YY_RULE_SETUP
-#line 318 "Parser/lex.ll"
+#line 334 "Parser/lex.ll"
 { KEYWORD_RETURN(INT128); }				// CFA
 	YY_BREAK
 case 89:
 YY_RULE_SETUP
-#line 319 "Parser/lex.ll"
+#line 335 "Parser/lex.ll"
 { KEYWORD_RETURN(INT128); }				// GCC
 	YY_BREAK
 case 90:
 YY_RULE_SETUP
-#line 320 "Parser/lex.ll"
+#line 336 "Parser/lex.ll"
 { KEYWORD_RETURN(INT128); }				// GCC
 	YY_BREAK
 case 91:
 YY_RULE_SETUP
-#line 321 "Parser/lex.ll"
+#line 337 "Parser/lex.ll"
 { KEYWORD_RETURN(LABEL); }				// GCC
 	YY_BREAK
 case 92:
 YY_RULE_SETUP
-#line 322 "Parser/lex.ll"
+#line 338 "Parser/lex.ll"
 { KEYWORD_RETURN(LONG); }
 	YY_BREAK
 case 93:
 YY_RULE_SETUP
-#line 323 "Parser/lex.ll"
+#line 339 "Parser/lex.ll"
 { KEYWORD_RETURN(MONITOR); }			// CFA
 	YY_BREAK
 case 94:
 YY_RULE_SETUP
-#line 324 "Parser/lex.ll"
+#line 340 "Parser/lex.ll"
 { KEYWORD_RETURN(MUTEX); }				// CFA
 	YY_BREAK
 case 95:
 YY_RULE_SETUP
-#line 325 "Parser/lex.ll"
+#line 341 "Parser/lex.ll"
 { KEYWORD_RETURN(NORETURN); }			// C11
 	YY_BREAK
 case 96:
 YY_RULE_SETUP
-#line 326 "Parser/lex.ll"
+#line 342 "Parser/lex.ll"
 { KEYWORD_RETURN(OFFSETOF); }		// GCC
 	YY_BREAK
 case 97:
 YY_RULE_SETUP
-#line 327 "Parser/lex.ll"
+#line 343 "Parser/lex.ll"
 { RETURN_VAL(ONE_T); }					// CFA
 	YY_BREAK
 case 98:
 YY_RULE_SETUP
-#line 328 "Parser/lex.ll"
+#line 344 "Parser/lex.ll"
 { QKEYWORD_RETURN(WOR); }				// CFA
 	YY_BREAK
 case 99:
 YY_RULE_SETUP
-#line 329 "Parser/lex.ll"
+#line 345 "Parser/lex.ll"
 { KEYWORD_RETURN(OTYPE); }				// CFA
 	YY_BREAK
 case 100:
 YY_RULE_SETUP
-#line 330 "Parser/lex.ll"
+#line 346 "Parser/lex.ll"
 { QKEYWORD_RETURN(RECOVER); }			// CFA
 	YY_BREAK
 case 101:
 YY_RULE_SETUP
-#line 331 "Parser/lex.ll"
+#line 347 "Parser/lex.ll"
 { KEYWORD_RETURN(REGISTER); }
 	YY_BREAK
 case 102:
 YY_RULE_SETUP
-#line 332 "Parser/lex.ll"
+#line 348 "Parser/lex.ll"
 { KEYWORD_RETURN(THROWRESUME); }		// CFA
 	YY_BREAK
 case 103:
 YY_RULE_SETUP
-#line 333 "Parser/lex.ll"
+#line 349 "Parser/lex.ll"
 { KEYWORD_RETURN(RESTRICT); }			// C99
 	YY_BREAK
 case 104:
 YY_RULE_SETUP
-#line 334 "Parser/lex.ll"
+#line 350 "Parser/lex.ll"
 { KEYWORD_RETURN(RESTRICT); }			// GCC
 	YY_BREAK
 case 105:
 YY_RULE_SETUP
-#line 335 "Parser/lex.ll"
+#line 351 "Parser/lex.ll"
 { KEYWORD_RETURN(RESTRICT); }			// GCC
 	YY_BREAK
 case 106:
 YY_RULE_SETUP
-#line 336 "Parser/lex.ll"
+#line 352 "Parser/lex.ll"
 { KEYWORD_RETURN(RETURN); }
 	YY_BREAK
 /* resume			{ KEYWORD_RETURN(RESUME); }				// CFA */
 case 107:
 YY_RULE_SETUP
-#line 338 "Parser/lex.ll"
+#line 354 "Parser/lex.ll"
 { KEYWORD_RETURN(SHORT); }
 	YY_BREAK
 case 108:
 YY_RULE_SETUP
-#line 339 "Parser/lex.ll"
+#line 355 "Parser/lex.ll"
 { KEYWORD_RETURN(SIGNED); }
 	YY_BREAK
 case 109:
 YY_RULE_SETUP
-#line 340 "Parser/lex.ll"
+#line 356 "Parser/lex.ll"
 { KEYWORD_RETURN(SIGNED); }				// GCC
 	YY_BREAK
 case 110:
 YY_RULE_SETUP
-#line 341 "Parser/lex.ll"
+#line 357 "Parser/lex.ll"
 { KEYWORD_RETURN(SIGNED); }				// GCC
 	YY_BREAK
 case 111:
 YY_RULE_SETUP
-#line 342 "Parser/lex.ll"
+#line 358 "Parser/lex.ll"
 { KEYWORD_RETURN(SIZEOF); }
 	YY_BREAK
 case 112:
 YY_RULE_SETUP
-#line 343 "Parser/lex.ll"
+#line 359 "Parser/lex.ll"
 { KEYWORD_RETURN(COUNTOF); }			// GCC
 	YY_BREAK
 case 113:
 YY_RULE_SETUP
-#line 344 "Parser/lex.ll"
+#line 360 "Parser/lex.ll"
 { KEYWORD_RETURN(STATIC); }
 	YY_BREAK
 case 114:
 YY_RULE_SETUP
-#line 345 "Parser/lex.ll"
+#line 361 "Parser/lex.ll"
 { KEYWORD_RETURN(STATICASSERT); }		// C11
 	YY_BREAK
 case 115:
 YY_RULE_SETUP
-#line 346 "Parser/lex.ll"
+#line 362 "Parser/lex.ll"
 { KEYWORD_RETURN(STATICASSERT); }		// C23
 	YY_BREAK
 case 116:
 YY_RULE_SETUP
-#line 347 "Parser/lex.ll"
+#line 363 "Parser/lex.ll"
 { KEYWORD_RETURN(STRUCT); }
 	YY_BREAK
 case 117:
 YY_RULE_SETUP
-#line 348 "Parser/lex.ll"
+#line 364 "Parser/lex.ll"
 { KEYWORD_RETURN(SUSPEND); }			// CFA
 	YY_BREAK
 case 118:
 YY_RULE_SETUP
-#line 349 "Parser/lex.ll"
+#line 365 "Parser/lex.ll"
 { KEYWORD_RETURN(SWITCH); }
 	YY_BREAK
 case 119:
 YY_RULE_SETUP
-#line 350 "Parser/lex.ll"
+#line 366 "Parser/lex.ll"
 { KEYWORD_RETURN(THREAD); }				// C11
 	YY_BREAK
 case 120:
 YY_RULE_SETUP
-#line 351 "Parser/lex.ll"
+#line 367 "Parser/lex.ll"
 { KEYWORD_RETURN(THREADLOCALGCC); }		// GCC
 	YY_BREAK
 case 121:
 YY_RULE_SETUP
-#line 352 "Parser/lex.ll"
+#line 368 "Parser/lex.ll"
 { KEYWORD_RETURN(THREADLOCALC11); }		// C11
 	YY_BREAK
 case 122:
 YY_RULE_SETUP
-#line 353 "Parser/lex.ll"
+#line 369 "Parser/lex.ll"
 { KEYWORD_RETURN(THREADLOCALC11); }		// C23
 	YY_BREAK
 case 123:
 YY_RULE_SETUP
-#line 354 "Parser/lex.ll"
+#line 370 "Parser/lex.ll"
 { KEYWORD_RETURN(THROW); }				// CFA
 	YY_BREAK
 case 124:
 YY_RULE_SETUP
-#line 355 "Parser/lex.ll"
+#line 371 "Parser/lex.ll"
 { KEYWORD_RETURN(THROWRESUME); }		// CFA
 	YY_BREAK
 case 125:
 YY_RULE_SETUP
-#line 356 "Parser/lex.ll"
+#line 372 "Parser/lex.ll"
 { QKEYWORD_RETURN(TIMEOUT); }			// CFA
 	YY_BREAK
 case 126:
 YY_RULE_SETUP
-#line 357 "Parser/lex.ll"
+#line 373 "Parser/lex.ll"
 { KEYWORD_RETURN(TRAIT); }				// CFA
 	YY_BREAK
 case 127:
 YY_RULE_SETUP
-#line 358 "Parser/lex.ll"
+#line 374 "Parser/lex.ll"
 { KEYWORD_RETURN(TRY); }				// CFA
 	YY_BREAK
 case 128:
 YY_RULE_SETUP
-#line 359 "Parser/lex.ll"
+#line 375 "Parser/lex.ll"
 { KEYWORD_RETURN(TTYPE); }				// CFA
 	YY_BREAK
 case 129:
 YY_RULE_SETUP
-#line 360 "Parser/lex.ll"
+#line 376 "Parser/lex.ll"
 { KEYWORD_RETURN(TYPEDEF); }
 	YY_BREAK
 case 130:
 YY_RULE_SETUP
-#line 361 "Parser/lex.ll"
+#line 377 "Parser/lex.ll"
 { KEYWORD_RETURN(TYPEOF); }				// GCC
 	YY_BREAK
 case 131:
 YY_RULE_SETUP
-#line 362 "Parser/lex.ll"
+#line 378 "Parser/lex.ll"
 { KEYWORD_RETURN(TYPEOF); }				// GCC
 	YY_BREAK
 case 132:
 YY_RULE_SETUP
-#line 363 "Parser/lex.ll"
+#line 379 "Parser/lex.ll"
 { KEYWORD_RETURN(TYPEOF); }				// GCC
 	YY_BREAK
 case 133:
 YY_RULE_SETUP
-#line 364 "Parser/lex.ll"
+#line 380 "Parser/lex.ll"
 { KEYWORD_RETURN(TYPEID); }				// GCC
 	YY_BREAK
 case 134:
 YY_RULE_SETUP
-#line 365 "Parser/lex.ll"
+#line 381 "Parser/lex.ll"
 { KEYWORD_RETURN(UNION); }
 	YY_BREAK
 case 135:
 YY_RULE_SETUP
-#line 366 "Parser/lex.ll"
+#line 382 "Parser/lex.ll"
 { KEYWORD_RETURN(UINT128); }			// GCC
 	YY_BREAK
 case 136:
 YY_RULE_SETUP
-#line 367 "Parser/lex.ll"
+#line 383 "Parser/lex.ll"
 { KEYWORD_RETURN(UNSIGNED); }
 	YY_BREAK
 case 137:
 YY_RULE_SETUP
-#line 368 "Parser/lex.ll"
+#line 384 "Parser/lex.ll"
 { KEYWORD_RETURN(VA_ARG); }			// GCC
 	YY_BREAK
 case 138:
 YY_RULE_SETUP
-#line 369 "Parser/lex.ll"
+#line 385 "Parser/lex.ll"
 { KEYWORD_RETURN(VA_LIST); }			// GCC
 	YY_BREAK
 case 139:
 YY_RULE_SETUP
-#line 370 "Parser/lex.ll"
+#line 386 "Parser/lex.ll"
 { KEYWORD_RETURN(VIRTUAL); }			// CFA
 	YY_BREAK
 case 140:
 YY_RULE_SETUP
-#line 371 "Parser/lex.ll"
+#line 387 "Parser/lex.ll"
 { KEYWORD_RETURN(VOID); }
 	YY_BREAK
 case 141:
 YY_RULE_SETUP
-#line 372 "Parser/lex.ll"
+#line 388 "Parser/lex.ll"
 { KEYWORD_RETURN(VOLATILE); }
 	YY_BREAK
 case 142:
 YY_RULE_SETUP
-#line 373 "Parser/lex.ll"
+#line 389 "Parser/lex.ll"
 { KEYWORD_RETURN(VOLATILE); }			// GCC
 	YY_BREAK
 case 143:
 YY_RULE_SETUP
-#line 374 "Parser/lex.ll"
+#line 390 "Parser/lex.ll"
 { KEYWORD_RETURN(VOLATILE); }			// GCC
 	YY_BREAK
 case 144:
 YY_RULE_SETUP
-#line 375 "Parser/lex.ll"
+#line 391 "Parser/lex.ll"
 { KEYWORD_RETURN(VTABLE); }				// CFA
 	YY_BREAK
 case 145:
 YY_RULE_SETUP
-#line 376 "Parser/lex.ll"
+#line 392 "Parser/lex.ll"
 { KEYWORD_RETURN(WAITFOR); }			// CFA
 	YY_BREAK
 case 146:
 YY_RULE_SETUP
-#line 377 "Parser/lex.ll"
+#line 393 "Parser/lex.ll"
 { KEYWORD_RETURN(WAITUNTIL); }			// CFA
 	YY_BREAK
 case 147:
 YY_RULE_SETUP
-#line 378 "Parser/lex.ll"
+#line 394 "Parser/lex.ll"
 { KEYWORD_RETURN(WHEN); }				// CFA
 	YY_BREAK
 case 148:
 YY_RULE_SETUP
-#line 379 "Parser/lex.ll"
+#line 395 "Parser/lex.ll"
 { KEYWORD_RETURN(WHILE); }
 	YY_BREAK
 case 149:
 YY_RULE_SETUP
-#line 380 "Parser/lex.ll"
+#line 396 "Parser/lex.ll"
 { KEYWORD_RETURN(WITH); }				// CFA
 	YY_BREAK
 case 150:
 YY_RULE_SETUP
-#line 381 "Parser/lex.ll"
+#line 397 "Parser/lex.ll"
 { RETURN_VAL(ZERO_T); }					// CFA
 	YY_BREAK
 /* identifier */
 case 151:
 YY_RULE_SETUP
-#line 384 "Parser/lex.ll"
+#line 400 "Parser/lex.ll"
 { IDENTIFIER_RETURN(); }
 	YY_BREAK
 case 152:
 YY_RULE_SETUP
-#line 385 "Parser/lex.ll"
+#line 401 "Parser/lex.ll"
 {										// CFA
 	yytext[yyleng] = '\0'; yytext += 2;					// SKULLDUGGERY: remove backquotes (ok to shorten?)
 	IDENTIFIER_RETURN();
@@ -4773,7 +4789,7 @@ YY_RULE_SETUP
 case 153:
 /* rule 153 can match eol */
 YY_RULE_SETUP
-#line 391 "Parser/lex.ll"
+#line 407 "Parser/lex.ll"
 {
 	strtext = new string( &yytext[2], yyleng - 4 );		// remove delimiters "[[" and "]]"
 	RETURN_STR(C23_ATTRIBUTE);
@@ -4782,444 +4798,444 @@ YY_RULE_SETUP
 /* numeric constants */
 case 154:
 YY_RULE_SETUP
-#line 397 "Parser/lex.ll"
+#line 413 "Parser/lex.ll"
 { NUMERIC_RETURN(INTEGERconstant); }
 	YY_BREAK
 case 155:
 YY_RULE_SETUP
-#line 398 "Parser/lex.ll"
+#line 414 "Parser/lex.ll"
 { NUMERIC_RETURN(INTEGERconstant); }
 	YY_BREAK
 case 156:
 YY_RULE_SETUP
-#line 399 "Parser/lex.ll"
+#line 415 "Parser/lex.ll"
 { NUMERIC_RETURN(INTEGERconstant); }
 	YY_BREAK
 case 157:
 YY_RULE_SETUP
-#line 400 "Parser/lex.ll"
+#line 416 "Parser/lex.ll"
 { NUMERIC_RETURN(INTEGERconstant); }
 	YY_BREAK
 case 158:
 YY_RULE_SETUP
-#line 401 "Parser/lex.ll"
+#line 417 "Parser/lex.ll"
 { NUMERIC_RETURN(FLOATING_DECIMALconstant); } // must appear before floating_constant
 	YY_BREAK
 case 159:
 YY_RULE_SETUP
-#line 402 "Parser/lex.ll"
+#line 418 "Parser/lex.ll"
 { NUMERIC_RETURN(FLOATING_FRACTIONconstant); } // must appear before floating_constant
 	YY_BREAK
 case 160:
 YY_RULE_SETUP
-#line 403 "Parser/lex.ll"
+#line 419 "Parser/lex.ll"
 { NUMERIC_RETURN(FLOATINGconstant); }
 	YY_BREAK
 case 161:
 YY_RULE_SETUP
-#line 404 "Parser/lex.ll"
+#line 420 "Parser/lex.ll"
 { NUMERIC_RETURN(FLOATINGconstant); }
 	YY_BREAK
 /* character constant, allows empty value, CPP also handles missing quote delimiter */
 case 162:
 YY_RULE_SETUP
-#line 407 "Parser/lex.ll"
+#line 423 "Parser/lex.ll"
 { BEGIN QUOTE; strtext = new string( yytext, yyleng ); }
 	YY_BREAK
 case 163:
 YY_RULE_SETUP
-#line 408 "Parser/lex.ll"
+#line 424 "Parser/lex.ll"
 { strtext->append( yytext, yyleng ); }
 	YY_BREAK
 case 164:
 /* rule 164 can match eol */
 YY_RULE_SETUP
-#line 409 "Parser/lex.ll"
+#line 425 "Parser/lex.ll"
 { BEGIN 0; strtext->append( yytext, yyleng ); RETURN_STR(CHARACTERconstant); }
 	YY_BREAK
 /* ' stop editor highlighting */
 /* string constant, CPP also handles missing quote delimiter */
 case 165:
 YY_RULE_SETUP
-#line 413 "Parser/lex.ll"
+#line 429 "Parser/lex.ll"
 { BEGIN STRING; strtext = new string( yytext, yyleng ); }
 	YY_BREAK
 case 166:
 YY_RULE_SETUP
-#line 414 "Parser/lex.ll"
+#line 430 "Parser/lex.ll"
 { strtext->append( yytext, yyleng ); }
 	YY_BREAK
 case 167:
 /* rule 167 can match eol */
 YY_RULE_SETUP
-#line 415 "Parser/lex.ll"
+#line 431 "Parser/lex.ll"
 { BEGIN 0; strtext->append( yytext, yyleng ); RETURN_STR(STRINGliteral); }
 	YY_BREAK
 /* " stop editor highlighting */
 /* common character/string constant */
 case 168:
 YY_RULE_SETUP
-#line 419 "Parser/lex.ll"
+#line 435 "Parser/lex.ll"
 { rm_underscore(); strtext->append( yytext, yyleng ); }
 	YY_BREAK
 case 169:
 /* rule 169 can match eol */
 YY_RULE_SETUP
-#line 420 "Parser/lex.ll"
+#line 436 "Parser/lex.ll"
 {}						// continuation (ALSO HANDLED BY CPP)
 	YY_BREAK
 case 170:
 YY_RULE_SETUP
-#line 421 "Parser/lex.ll"
+#line 437 "Parser/lex.ll"
 { strtext->append( yytext, yyleng ); } // unknown escape character, let C figure it out
 	YY_BREAK
 /* punctuation */
 case 171:
 YY_RULE_SETUP
-#line 424 "Parser/lex.ll"
+#line 440 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 172:
 YY_RULE_SETUP
-#line 425 "Parser/lex.ll"
+#line 441 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 173:
 YY_RULE_SETUP
-#line 426 "Parser/lex.ll"
+#line 442 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 174:
 YY_RULE_SETUP
-#line 427 "Parser/lex.ll"
+#line 443 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 175:
 YY_RULE_SETUP
-#line 428 "Parser/lex.ll"
+#line 444 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 176:
 YY_RULE_SETUP
-#line 429 "Parser/lex.ll"
+#line 445 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 177:
 YY_RULE_SETUP
-#line 430 "Parser/lex.ll"
+#line 446 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 178:
 YY_RULE_SETUP
-#line 431 "Parser/lex.ll"
+#line 447 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 179:
 YY_RULE_SETUP
-#line 432 "Parser/lex.ll"
+#line 448 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }					// also operator
 	YY_BREAK
 case 180:
 YY_RULE_SETUP
-#line 433 "Parser/lex.ll"
+#line 449 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 181:
 YY_RULE_SETUP
-#line 434 "Parser/lex.ll"
+#line 450 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 182:
 YY_RULE_SETUP
-#line 435 "Parser/lex.ll"
+#line 451 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }					// also operator
 	YY_BREAK
 case 183:
 YY_RULE_SETUP
-#line 436 "Parser/lex.ll"
+#line 452 "Parser/lex.ll"
 { NAMEDOP_RETURN(ATTR); }				// CFA, attribute shorthand
 	YY_BREAK
 case 184:
 YY_RULE_SETUP
-#line 437 "Parser/lex.ll"
+#line 453 "Parser/lex.ll"
 { NAMEDOP_RETURN(ELLIPSIS); }
 	YY_BREAK
 /* alternative C99 brackets, "<:" & "<:<:" handled by preprocessor */
 case 185:
 YY_RULE_SETUP
-#line 440 "Parser/lex.ll"
+#line 456 "Parser/lex.ll"
 { RETURN_VAL('['); }
 	YY_BREAK
 case 186:
 YY_RULE_SETUP
-#line 441 "Parser/lex.ll"
+#line 457 "Parser/lex.ll"
 { RETURN_VAL(']'); }
 	YY_BREAK
 case 187:
 YY_RULE_SETUP
-#line 442 "Parser/lex.ll"
+#line 458 "Parser/lex.ll"
 { RETURN_VAL('{'); }
 	YY_BREAK
 case 188:
 YY_RULE_SETUP
-#line 443 "Parser/lex.ll"
+#line 459 "Parser/lex.ll"
 { RETURN_VAL('}'); }
 	YY_BREAK
 /* operators */
 case 189:
 YY_RULE_SETUP
-#line 446 "Parser/lex.ll"
+#line 462 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 190:
 YY_RULE_SETUP
-#line 447 "Parser/lex.ll"
+#line 463 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 191:
 YY_RULE_SETUP
-#line 448 "Parser/lex.ll"
+#line 464 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 192:
 YY_RULE_SETUP
-#line 449 "Parser/lex.ll"
+#line 465 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 193:
 YY_RULE_SETUP
-#line 450 "Parser/lex.ll"
+#line 466 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }					// CFA, exponentiation
 	YY_BREAK
 case 194:
 YY_RULE_SETUP
-#line 451 "Parser/lex.ll"
+#line 467 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 195:
 YY_RULE_SETUP
-#line 452 "Parser/lex.ll"
+#line 468 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 196:
 YY_RULE_SETUP
-#line 453 "Parser/lex.ll"
+#line 469 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 197:
 YY_RULE_SETUP
-#line 454 "Parser/lex.ll"
+#line 470 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 198:
 YY_RULE_SETUP
-#line 455 "Parser/lex.ll"
+#line 471 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 199:
 YY_RULE_SETUP
-#line 456 "Parser/lex.ll"
+#line 472 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 200:
 YY_RULE_SETUP
-#line 457 "Parser/lex.ll"
+#line 473 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 201:
 YY_RULE_SETUP
-#line 458 "Parser/lex.ll"
+#line 474 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 202:
 YY_RULE_SETUP
-#line 459 "Parser/lex.ll"
+#line 475 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 203:
 YY_RULE_SETUP
-#line 460 "Parser/lex.ll"
+#line 476 "Parser/lex.ll"
 { ASCIIOP_RETURN(); }
 	YY_BREAK
 case 204:
 YY_RULE_SETUP
-#line 462 "Parser/lex.ll"
+#line 478 "Parser/lex.ll"
 { NAMEDOP_RETURN(ICR); }
 	YY_BREAK
 case 205:
 YY_RULE_SETUP
-#line 463 "Parser/lex.ll"
+#line 479 "Parser/lex.ll"
 { NAMEDOP_RETURN(DECR); }
 	YY_BREAK
 case 206:
 YY_RULE_SETUP
-#line 464 "Parser/lex.ll"
+#line 480 "Parser/lex.ll"
 { NAMEDOP_RETURN(EQ); }
 	YY_BREAK
 case 207:
 YY_RULE_SETUP
-#line 465 "Parser/lex.ll"
+#line 481 "Parser/lex.ll"
 { NAMEDOP_RETURN(NE); }
 	YY_BREAK
 case 208:
 YY_RULE_SETUP
-#line 466 "Parser/lex.ll"
+#line 482 "Parser/lex.ll"
 { NAMEDOP_RETURN(LS); }
 	YY_BREAK
 case 209:
 YY_RULE_SETUP
-#line 467 "Parser/lex.ll"
+#line 483 "Parser/lex.ll"
 { NAMEDOP_RETURN(RS); }
 	YY_BREAK
 case 210:
 YY_RULE_SETUP
-#line 468 "Parser/lex.ll"
+#line 484 "Parser/lex.ll"
 { NAMEDOP_RETURN(LE); }
 	YY_BREAK
 case 211:
 YY_RULE_SETUP
-#line 469 "Parser/lex.ll"
+#line 485 "Parser/lex.ll"
 { NAMEDOP_RETURN(GE); }
 	YY_BREAK
 case 212:
 YY_RULE_SETUP
-#line 470 "Parser/lex.ll"
+#line 486 "Parser/lex.ll"
 { NAMEDOP_RETURN(ANDAND); }
 	YY_BREAK
 case 213:
 YY_RULE_SETUP
-#line 471 "Parser/lex.ll"
+#line 487 "Parser/lex.ll"
 { NAMEDOP_RETURN(OROR); }
 	YY_BREAK
 case 214:
 YY_RULE_SETUP
-#line 472 "Parser/lex.ll"
+#line 488 "Parser/lex.ll"
 { NAMEDOP_RETURN(ARROW); }
 	YY_BREAK
 case 215:
 YY_RULE_SETUP
-#line 473 "Parser/lex.ll"
+#line 489 "Parser/lex.ll"
 { NAMEDOP_RETURN(PLUSassign); }
 	YY_BREAK
 case 216:
 YY_RULE_SETUP
-#line 474 "Parser/lex.ll"
+#line 490 "Parser/lex.ll"
 { NAMEDOP_RETURN(MINUSassign); }
 	YY_BREAK
 case 217:
 YY_RULE_SETUP
-#line 475 "Parser/lex.ll"
+#line 491 "Parser/lex.ll"
 { NAMEDOP_RETURN(EXPassign); }			// CFA, exponentiation
 	YY_BREAK
 case 218:
 YY_RULE_SETUP
-#line 476 "Parser/lex.ll"
+#line 492 "Parser/lex.ll"
 { NAMEDOP_RETURN(MULTassign); }
 	YY_BREAK
 case 219:
 YY_RULE_SETUP
-#line 477 "Parser/lex.ll"
+#line 493 "Parser/lex.ll"
 { NAMEDOP_RETURN(DIVassign); }
 	YY_BREAK
 case 220:
 YY_RULE_SETUP
-#line 478 "Parser/lex.ll"
+#line 494 "Parser/lex.ll"
 { NAMEDOP_RETURN(MODassign); }
 	YY_BREAK
 case 221:
 YY_RULE_SETUP
-#line 479 "Parser/lex.ll"
+#line 495 "Parser/lex.ll"
 { NAMEDOP_RETURN(ANDassign); }
 	YY_BREAK
 case 222:
 YY_RULE_SETUP
-#line 480 "Parser/lex.ll"
+#line 496 "Parser/lex.ll"
 { NAMEDOP_RETURN(ORassign); }
 	YY_BREAK
 case 223:
 YY_RULE_SETUP
-#line 481 "Parser/lex.ll"
+#line 497 "Parser/lex.ll"
 { NAMEDOP_RETURN(ERassign); }
 	YY_BREAK
 case 224:
 YY_RULE_SETUP
-#line 482 "Parser/lex.ll"
+#line 498 "Parser/lex.ll"
 { NAMEDOP_RETURN(LSassign); }
 	YY_BREAK
 case 225:
 YY_RULE_SETUP
-#line 483 "Parser/lex.ll"
+#line 499 "Parser/lex.ll"
 { NAMEDOP_RETURN(RSassign); }
 	YY_BREAK
 case 226:
 YY_RULE_SETUP
-#line 485 "Parser/lex.ll"
+#line 501 "Parser/lex.ll"
 { NAMEDOP_RETURN(ATassign); }			// CFA
 	YY_BREAK
 case 227:
 YY_RULE_SETUP
-#line 486 "Parser/lex.ll"
+#line 502 "Parser/lex.ll"
 { NAMEDOP_RETURN(ErangeUpLt); }			// CFA
 	YY_BREAK
 case 228:
 YY_RULE_SETUP
-#line 487 "Parser/lex.ll"
+#line 503 "Parser/lex.ll"
 { NAMEDOP_RETURN(ErangeUpLe); }			// CFA
 	YY_BREAK
 case 229:
 YY_RULE_SETUP
-#line 488 "Parser/lex.ll"
+#line 504 "Parser/lex.ll"
 { NAMEDOP_RETURN(ErangeUpLe); }			// CFA
 	YY_BREAK
 case 230:
 YY_RULE_SETUP
-#line 489 "Parser/lex.ll"
+#line 505 "Parser/lex.ll"
 { NAMEDOP_RETURN(ErangeDownGt); }		// CFA
 	YY_BREAK
 case 231:
 YY_RULE_SETUP
-#line 490 "Parser/lex.ll"
+#line 506 "Parser/lex.ll"
 { NAMEDOP_RETURN(ErangeDownGe); }		// CFA
 	YY_BREAK
 case 232:
 YY_RULE_SETUP
-#line 491 "Parser/lex.ll"
+#line 507 "Parser/lex.ll"
 { NAMEDOP_RETURN(ErangeEq); }			// CFA
 	YY_BREAK
 case 233:
 YY_RULE_SETUP
-#line 492 "Parser/lex.ll"
+#line 508 "Parser/lex.ll"
 { NAMEDOP_RETURN(ErangeNe); }			// CFA
 	YY_BREAK
 case 234:
 YY_RULE_SETUP
-#line 493 "Parser/lex.ll"
+#line 509 "Parser/lex.ll"
 { NAMEDOP_RETURN(ErangeDownEq); }		// CFA
 	YY_BREAK
 case 235:
 YY_RULE_SETUP
-#line 494 "Parser/lex.ll"
+#line 510 "Parser/lex.ll"
 { NAMEDOP_RETURN(ErangeDownNe); }		// CFA
 	YY_BREAK
 /* CFA, operator identifier */
 case 236:
 YY_RULE_SETUP
-#line 497 "Parser/lex.ll"
+#line 513 "Parser/lex.ll"
 { IDENTIFIER_RETURN(); }				// unary
 	YY_BREAK
 case 237:
 YY_RULE_SETUP
-#line 498 "Parser/lex.ll"
+#line 514 "Parser/lex.ll"
 { IDENTIFIER_RETURN(); }
 	YY_BREAK
 case 238:
 YY_RULE_SETUP
-#line 499 "Parser/lex.ll"
+#line 515 "Parser/lex.ll"
 { IDENTIFIER_RETURN(); }
 	YY_BREAK
 case 239:
 YY_RULE_SETUP
-#line 500 "Parser/lex.ll"
+#line 516 "Parser/lex.ll"
 {										// postfix operator
 	yylval.tok.str = new string( &yytext[2] );			// remove ?`
 	yylval.tok.str = build_postfix_name( yylval.tok.str ); // add prefix
@@ -5228,7 +5244,7 @@ YY_RULE_SETUP
 	YY_BREAK
 case 240:
 YY_RULE_SETUP
-#line 505 "Parser/lex.ll"
+#line 521 "Parser/lex.ll"
 { IDENTIFIER_RETURN(); }		// binary
 	YY_BREAK
 /*
@@ -5259,7 +5275,7 @@ YY_RULE_SETUP
 	*/
 case 241:
 YY_RULE_SETUP
-#line 532 "Parser/lex.ll"
+#line 548 "Parser/lex.ll"
 {
 	// 1 or 2 character unary operator ?
 	int i = yytext[1] == '?' ? 1 : 2;
@@ -5274,15 +5290,15 @@ YY_RULE_SETUP
 /* unknown character */
 case 242:
 YY_RULE_SETUP
-#line 544 "Parser/lex.ll"
+#line 560 "Parser/lex.ll"
 { yyerror( "unknown character" ); }
 	YY_BREAK
 case 243:
 YY_RULE_SETUP
-#line 546 "Parser/lex.ll"
+#line 562 "Parser/lex.ll"
 ECHO;
 	YY_BREAK
-#line 5285 "Parser/lex.cc"
+#line 5301 "Parser/lex.cc"
 case YY_STATE_EOF(INITIAL):
 case YY_STATE_EOF(COMMENT):
 case YY_STATE_EOF(QUOTE):
@@ -6263,7 +6279,7 @@ void yyfree (void * ptr )
 
 #define YYTABLES_NAME "yytables"
 
-#line 546 "Parser/lex.ll"
+#line 562 "Parser/lex.ll"
 
 
 // ----end of lexer----

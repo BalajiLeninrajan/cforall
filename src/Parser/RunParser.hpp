@@ -27,8 +27,9 @@ namespace ast {
 /// Parse the contents of the input file, setting the initial linkage to the
 /// value provided. Results are saved to the internal accumulator.
 /// The input file is closed when complete. Exits instead of returning on
-/// error or if alwaysExit is true.
-void parse( FILE * input, ast::Linkage::Spec linkage, bool alwaysExit = false );
+/// error or if alwaysExit is true. With countLines, locations also record
+/// their line in the input file (CodeLocation::first_pline).
+void parse( FILE * input, ast::Linkage::Spec linkage, bool alwaysExit = false, bool countLines = false );
 
 /// Drain the internal accumulator of parsed code and build a translation
 /// unit from it.

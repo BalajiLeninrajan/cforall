@@ -90,6 +90,9 @@ std::unordered_map<std::string, std::string> renames;	// qualified name of a nes
 std::map<std::tuple<std::string, int, int>, int> typeParamClasses;	// (file, line, col) -> class as written
 std::vector<ast::ptr<ast::Expr>> resolvedExprs;			// see recordResolvedExpr
 
+// Array and function parameters as written, before Enum and Pointer Decay: (file, line, col) -> (type, declaration).
+std::map<std::tuple<std::string, int, int>, std::pair<std::string, std::string>> writtenParams;
+
 // ---------------------------------------------------------------------------
 // The preprocessed input, by (file, line) as named by the line markers.
 
@@ -97,6 +100,9 @@ class SourceText {
 	// A line has several pieces when cpp split it (see load()); columns restart in each piece.
 	std::unordered_map<std::string, std::unordered_map<int, std::vector<std::string>>> lines;
 	std::string firstFile;
+	// The input line of each stored piece and back (CodeLocation::first_pline).
+	std::unordered_map<const std::string *, int> plineOf;
+	std::unordered_map<int, const std::string *> pieceAt;
   public:
 	void load( const std::string & path ) {
 		std::ifstream in( path, std::ios::binary );
@@ -114,8 +120,11 @@ class SourceText {
 		int lastLine = -1;
 		bool continues = false;
 		int depth = 0;
+		int pline = 1;									// the input line of cur
+		// Stored pieces as (line, index) and input line; pieces move while their line grows.
+		std::vector<std::tuple<std::vector<std::string> *, size_t, int>> stored;
 		size_t pos = 0;
-		while ( pos < text.size() ) {
+		for ( ; pos < text.size(); pline += 1 ) {
 			size_t end = text.find( '\n', pos );
 			if ( end == std::string::npos ) end = text.size();
 			std::string_view cur( text.data() + pos, end - pos );
@@ -131,10 +140,14 @@ class SourceText {
 				// The main file: the first code outside any include and outside cpp's <built-in> and <command-line>.
 				if ( firstFile.empty() && depth == 0 && ! file.empty() && file[0] != '<' ) firstFile = file;
 				if ( continues ) {
-					if ( last ) last->emplace_back( cur );
+					if ( last ) {
+						last->emplace_back( cur );
+						stored.emplace_back( last, last->size() - 1, pline );
+					} // if
 				} else {
 					auto [it, added] = lines[file].emplace( line, std::vector<std::string>{ std::string( cur ) } );
 					last = added ? &it->second : nullptr;	// keeps the first copy of a twice-included line
+					if ( added ) stored.emplace_back( last, 0, pline );
 				} // if
 				continues = false;
 				lastFile = file;
@@ -142,7 +155,12 @@ class SourceText {
 				line += 1;
 			} // if
 			pos = end + 1;
-		} // while
+		} // for
+		for ( auto & [owner, index, at] : stored ) {
+			const std::string * piece = &(*owner)[index];
+			plineOf.emplace( piece, at );
+			pieceAt.emplace( at, piece );
+		} // for
 	}
 
 	// Same shape as the lexer's line-directive rule: # N "file" flags... `flags` has bit 0 set for flag 1 (entering
@@ -178,6 +196,29 @@ class SourceText {
 		return l == f->second.end() ? nullptr : &l->second;
 	}
 
+	// The pieces of a line, the one at input line `pline` first when it is one of them.
+	std::vector<const std::string *> pieces( const std::string & file, int line, int pline ) const {
+		std::vector<const std::string *> out;
+		const std::vector<std::string> * all = this->line( file, line );
+		if ( ! all ) return out;
+		auto at = pieceAt.find( pline );
+		const std::string * first = nullptr;
+		for ( const std::string & s : *all ) {
+			if ( at != pieceAt.end() && at->second == &s ) first = &s;
+		} // for
+		if ( first ) out.push_back( first );
+		for ( const std::string & s : *all ) {
+			if ( &s != first ) out.push_back( &s );
+		} // for
+		return out;
+	}
+
+	// The input line of a piece, or -1.
+	int inputLine( const std::string * piece ) const {
+		auto it = plineOf.find( piece );
+		return it == plineOf.end() ? -1 : it->second;
+	}
+
 	bool hasFile( const std::string & file ) const { return lines.count( file ); }
 	const std::string & first() const { return firstFile; }
 };
@@ -187,19 +228,18 @@ SourceText source;
 enum class Spelling { Yes, No, Unknown };
 
 // The piece of the line at `loc` whose text at the range spells `name`, ignoring whitespace inside the range (so
-// "?{ }" spells "?{}"). A split line has several pieces and the location does not say which one it is in.
+// "?{ }" spells "?{}"). A split line has several pieces; the one at the location's input line is tried first.
 const std::string * spellingPiece( const CodeLocation & loc, const std::string & name ) {
 	if ( loc.isUnset() || loc.first_column < 0 || name.empty() ) return nullptr;
 	if ( loc.last_line != loc.first_line || loc.last_column <= loc.first_column ) return nullptr;
-	const std::vector<std::string> * pieces = source.line( loc.filename.str(), loc.first_line );
-	if ( ! pieces ) return nullptr;
-	for ( const std::string & text : *pieces ) {
+	for ( const std::string * piece : source.pieces( loc.filename.str(), loc.first_line, loc.first_pline ) ) {
+		const std::string & text = *piece;
 		if ( (size_t)loc.last_column > text.size() ) continue;
 		std::string word;
 		for ( char c : text.substr( loc.first_column, loc.last_column - loc.first_column ) ) {
 			if ( c != ' ' && c != '\t' ) word += c;
 		} // for
-		if ( word == name ) return &text;
+		if ( word == name ) return piece;
 	} // for
 	return nullptr;
 }
@@ -249,12 +289,75 @@ bool followsSelection( const CodeLocation & loc, const std::string & name ) {
 	return false;
 }
 
+// The first non-blank character at or after (line, col), looking a few lines ahead, and the input line of the piece
+// it is in. On a split line the piece at input line `pline` is tried first on the first line, then the first piece
+// long enough.
+bool nextNonBlank( const std::string & file, int line, int col, int pline, int & atLine, int & atCol, int & atPline,
+		char & c ) {
+	for ( int n = 0; n < 8; n += 1, line += 1, col = 0, pline = -1 ) {
+		for ( const std::string * piece : source.pieces( file, line, pline ) ) {
+			const std::string & text = *piece;
+			if ( col < 0 || (size_t)col > text.size() ) continue;
+			size_t i = text.find_first_not_of( " \t\r", col );
+			if ( i == std::string::npos ) break;		// the rest of the line is blank
+			atLine = line;
+			atCol = (int)i;
+			atPline = source.inputLine( piece );
+			c = text[i];
+			return true;
+		} // for
+	} // for
+	return false;
+}
+
+const std::string opChars = "+-*/%<>=!&|^~\\";
+
+// The one occurrence of the operator `symbol` between (fromLine, fromCol) and (toLine, toCol) that is not part of a
+// longer operator, and the input line of the piece it is in. Within one line, the first piece of a split line with
+// exactly one occurrence wins, trying the piece at input line `fromPline` first; across lines there must be exactly
+// one in all.
+bool findOperator( const std::string & file, int fromLine, int fromCol, int fromPline, int toLine, int toCol,
+		const std::string & symbol, int & atLine, int & atCol, int & atPline ) {
+	if ( fromLine < 1 || fromCol < 0 || toCol < 0 || toLine < fromLine || toLine - fromLine > 8 ) return false;
+	if ( fromLine == toLine && toCol <= fromCol ) return false;
+	int count = 0;
+	for ( int line = fromLine; line <= toLine; line += 1 ) {
+		for ( const std::string * piece : source.pieces( file, line, line == fromLine ? fromPline : -1 ) ) {
+			const std::string & text = *piece;
+			size_t from = line == fromLine ? fromCol : 0, to = line == toLine ? toCol : text.size();
+			if ( to > text.size() || from > to ) continue;
+			int found = -1, here = 0;
+			for ( size_t at = text.find( symbol, from ); at != std::string::npos && at + symbol.size() <= to;
+					at = text.find( symbol, at + 1 ) ) {
+				bool alone = ( at == 0 || opChars.find( text[at - 1] ) == std::string::npos )
+					&& ( at + symbol.size() >= text.size() || opChars.find( text[at + symbol.size()] ) == std::string::npos );
+				if ( alone ) found = (int)at, here += 1;
+			} // for
+			if ( fromLine == toLine ) {
+				if ( here != 1 ) continue;
+				atLine = line;
+				atCol = found;
+				atPline = source.inputLine( piece );
+				return true;
+			} // if
+			if ( here > 0 ) {
+				count += here;
+				atLine = line;
+				atCol = found;
+				atPline = source.inputLine( piece );
+			} // if
+		} // for
+	} // for
+	return fromLine != toLine && count == 1;
+}
+
 // ---------------------------------------------------------------------------
 // JSON helpers
 
 json rangeJson( const CodeLocation & loc, bool withFile ) {
 	int line = loc.first_line, col = std::max( loc.first_column, 0 );
 	int endLine = loc.last_line, endCol = loc.last_column;
+	int pline = loc.first_pline, endPline = loc.last_pline;
 	if ( loc.first_column < 0 ) {						// only the line is known: cover it
 		const std::vector<std::string> * pieces = source.line( loc.filename.str(), line );
 		endLine = line;
@@ -262,9 +365,12 @@ json rangeJson( const CodeLocation & loc, bool withFile ) {
 		if ( pieces ) {
 			for ( const std::string & text : *pieces ) endCol = std::max( endCol, (int)text.size() );
 		} // if
-	} else if ( endLine < line || ( endLine == line && endCol < col ) ) {
+		pline = endPline = -1;							// the columns are not those of one input line
+	} else if ( endLine < line || ( endLine == line && ( pline > 0 && endPline > 0 && endPline != pline
+			? endPline < pline : endCol < col ) ) ) {	// a range can end on a later piece of a split line
 		endLine = line;
 		endCol = col;
+		endPline = pline;
 	} // if
 	json j;
 	if ( withFile ) j["file"] = loc.filename.str();
@@ -272,6 +378,8 @@ json rangeJson( const CodeLocation & loc, bool withFile ) {
 	j["col"] = col;
 	j["endLine"] = endLine;
 	j["endCol"] = endCol;
+	if ( pline > 0 ) j["pline"] = pline;
+	if ( endPline > 0 ) j["endPline"] = endPline;
 	return j;
 }
 
@@ -560,6 +668,48 @@ DeclKey keyOf( const ast::Decl * decl ) {
 		decl->location.first_line, decl->location.first_column );
 }
 
+// Labels are not declarations in the tree; they get a key class of their own.
+const int labelClass = 4;
+
+DeclKey labelKey( const CodeLocation & loc, const std::string & name ) {
+	return DeclKey( labelClass, name, loc.filename.str(), loc.first_line, loc.first_column );
+}
+
+using PlaceKey = std::tuple<std::string, int, int>;
+using RangeKey = std::tuple<std::string, int, int, int, int>;
+
+PlaceKey placeKey( const CodeLocation & loc ) {
+	return PlaceKey( loc.filename.str(), loc.first_line, loc.first_column );
+}
+
+RangeKey rangeKey( const CodeLocation & loc ) {
+	return RangeKey( loc.filename.str(), loc.first_line, loc.first_column, loc.last_line, loc.last_column );
+}
+
+// Records the named types in a type that a pass is about to erase (the arguments of a trait instance) as SideRefs.
+struct SideTypeRefCore final : public ast::WithShortCircuiting {
+	void use( const CodeLocation & loc, const ast::Decl * decl ) {
+		if ( ! decl || loc.isUnset() || decl->location.isUnset() ) return;
+		sideRefs.push_back( { loc, keyClass( decl ), decl->name, decl->location } );
+	}
+
+	void previsit( const ast::Expr * ) { visit_children = false; }
+	void previsit( const ast::TypeExpr * ) {}
+	void previsit( const ast::StructInstType * type ) { use( type->location, type->base.get() ); }
+	void previsit( const ast::UnionInstType * type ) { use( type->location, type->base.get() ); }
+	void previsit( const ast::EnumInstType * type ) { use( type->location, type->base.get() ); }
+	void previsit( const ast::TypeInstType * type ) { use( type->location, type->base.get() ); }
+};
+
+// CodeGen asserts on expressions that only the resolver uses, so a type holding one is not printed.
+struct Printable final : public ast::WithShortCircuiting {
+	bool ok = true;
+	void previsit( const ast::QualifiedNameExpr * ) { ok = false; }
+	void previsit( const ast::ImplicitCopyCtorExpr * ) { ok = false; }
+	void previsit( const ast::UntypedInitExpr * ) { ok = false; }
+	void previsit( const ast::InitExpr * ) { ok = false; }
+};
+
 // ---------------------------------------------------------------------------
 // The dump
 
@@ -581,6 +731,7 @@ class Dumper {
 	std::map<DeclKey, int> ids;
 	std::vector<Ref> pendingRefs;
 	std::set<std::tuple<std::string, int, int, int, int>> exprSeen;
+	std::set<PlaceKey> traitMembers;					// where the members of every trait are
 
 	bool inFocus( const CodeLocation & loc ) const {
 		return loc.isSet() && focus.count( loc.filename.str() );
@@ -617,8 +768,9 @@ class Dumper {
 		j["kind"] = kind;
 		putRange( j, decl->extent.isSet() ? decl->extent : decl->location );
 		j["nameRange"] = rangeJson( decl->location, false );
-		j["type"] = declType( decl );
-		j["signature"] = signature( decl );
+		const std::pair<std::string, std::string> * written = strcmp( kind, "parameter" ) == 0 ? writtenParam( decl ) : nullptr;
+		j["type"] = written ? written->first : declType( decl );
+		j["signature"] = written ? written->second : signature( decl );
 		j["parent"] = parent >= 0 ? json( parent ) : json( nullptr );
 		j["typeDecl"] = nullptr;
 		j["body"] = nullptr;
@@ -668,8 +820,43 @@ class Dumper {
 
 	void addRef( const CodeLocation & loc, const DeclKey & key, const char * role ) {
 		if ( ! inFocus( loc ) ) return;
-		if ( spells( loc, std::get<1>( key ) ) != Spelling::Yes ) return;
+		if ( spells( loc, sourceTypeName( std::get<1>( key ) ) ) != Spelling::Yes ) return;
 		pendingRefs.push_back( { loc, nullptr, key, role } );
+	}
+
+	// A label, at its name in `L: stmt`. It is local to the function `parent`.
+	int addLabel( const CodeLocation & loc, const std::string & name, int parent ) {
+		DeclKey key = labelKey( loc, name );
+		auto found = ids.find( key );
+		if ( found != ids.end() ) return found->second;
+		int id = (int)decls.size();
+		json j;
+		j["id"] = id;
+		j["name"] = name;
+		j["kind"] = "label";
+		putRange( j, loc );
+		j["nameRange"] = rangeJson( loc, false );
+		j["type"] = "";
+		j["signature"] = name + ":";
+		j["parent"] = parent >= 0 ? json( parent ) : json( nullptr );
+		j["typeDecl"] = nullptr;
+		j["body"] = nullptr;
+		j["generated"] = false;
+		j["local"] = true;
+		decls.push_back( std::move( j ) );
+		ids.emplace( key, id );
+		return id;
+	}
+
+	bool isTraitMember( const CodeLocation & loc ) const {
+		return traitMembers.count( placeKey( loc ) );
+	}
+
+	// The type and declaration text of an array or function parameter as written.
+	static const std::pair<std::string, std::string> * writtenParam( const ast::Decl * decl ) {
+		if ( decl->location.isUnset() ) return nullptr;
+		auto found = writtenParams.find( placeKey( decl->location ) );
+		return found == writtenParams.end() ? nullptr : &found->second;
 	}
 
 	void addExpr( const CodeLocation & loc, const ast::Type * type ) {
@@ -798,7 +985,11 @@ class Dumper {
 			text += " " + sourceName( func ) + "(";
 			for ( size_t i = 0; i < func->params.size(); i += 1 ) {
 				text += i ? ", " : " ";
-				text += typeText( func->params[i]->get_type(), func->params[i]->name );
+				if ( auto written = writtenParam( func->params[i] ) ) {
+					text += written->second;
+				} else {
+					text += typeText( func->params[i]->get_type(), func->params[i]->name );
+				} // if
 				text += defaultArgument( func->params[i] );
 			} // for
 			if ( func->type && func->type->isVarArgs ) text += func->params.empty() ? " ..." : ", ...";
@@ -858,7 +1049,7 @@ void typeRefs( Dumper & d, const ast::Type * type ) {
 	type->accept( pass );
 }
 
-struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards {
+struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards, public ast::WithVisitorRef<DumpCore> {
 	Dumper & d;
 	DumpCore( Dumper & d ) : d( d ) {}
 
@@ -889,6 +1080,14 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards 
 
 	// Inside the initializer of a generated local, whose blocks are not scopes the user wrote.
 	bool inGenerated = false;
+
+	// The labels of the function being walked, and the uses waiting for them (a goto can come before its label).
+	const ast::FunctionDecl * labelOwner = nullptr;
+	std::map<std::string, DeclKey> labels;
+	std::vector<std::pair<CodeLocation, std::string>> labelUses;
+
+	// The expressions of with clauses. A name found through with is a member of one of them.
+	std::set<RangeKey> withExprs;
 
 	bool local() const { return functionDepth > 0; }
 
@@ -926,18 +1125,121 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards 
 
 	void previsit( const ast::FunctionDecl * decl ) {
 		int id;
-		if ( ! declare( decl, "function", id ) || ( ! d.inFocus( decl->location ) && ! local() ) ) {
+		bool walk = declare( decl, "function", id );
+		// Desugaring moves user code into nested functions it makes (the body of corun). Their names are not
+		// spelled in the source, but the code inside is the user's.
+		bool generated = ! walk && local() && decl->stmts && decl->linkage != ast::Linkage::AutoGen
+			&& ! skip.count( decl ) && d.inFocus( decl->location ) && d.isGenerated( decl );
+		if ( ! ( walk || generated ) || ( ! d.inFocus( decl->location ) && ! local() ) ) {
 			visit_children = false;
 			return;
 		} // if
-		for ( const ast::DeclWithType * assertion : decl->assertions ) skip.insert( assertion );
+		for ( const ast::DeclWithType * assertion : decl->assertions ) {
+			skip.insert( assertion );
+			assertionRefs( assertion );
+		} // for
+		for ( const ast::Expr * expr : decl->withExprs ) noteWith( expr );
 		enter( Context::Function, id );
 		GuardValue( functionDepth ) += 1;
-		GuardValue( paramBody ) = userBody( decl );
-		GuardValue( wrapperBody ) = paramBody != decl->stmts.get() ? decl->stmts.get() : nullptr;
+		const ast::CompoundStmt * body = userBody( decl );
+		if ( generated && body && ! blockStart( body->location ) ) body = nullptr;	// corun f( x ); has no braces
+		GuardValue( paramBody ) = body;
+		GuardValue( wrapperBody ) = body != decl->stmts.get() ? decl->stmts.get() : nullptr;
 		GuardValue( paramIds ).clear();
+		GuardValue( labelOwner ) = decl;
+		GuardValue( labels ).clear();
+		GuardValue( labelUses ).clear();
 		for ( const ast::DeclWithType * param : decl->params ) params.insert( param );
 		for ( const ast::DeclWithType * ret : decl->returns ) params.insert( ret );
+	}
+
+	// A goto, break or continue can name a label defined later in the function.
+	void postvisit( const ast::FunctionDecl * decl ) {
+		if ( decl != labelOwner ) return;
+		for ( const auto & [loc, name] : labelUses ) {
+			auto found = labels.find( name );
+			if ( found != labels.end() ) d.addRef( loc, found->second, "read" );
+		} // for
+	}
+
+	// The types in an assertion written in the source, as in forall( T | { int ?<?( T, T ); } ). Assertions copied
+	// from a trait (forall( T | ord( T ) )) are located at the trait's members and are skipped.
+	void assertionRefs( const ast::DeclWithType * assertion ) {
+		if ( ! d.inFocus( assertion->location ) || d.isTraitMember( assertion->location ) ) return;
+		typeRefs( d, assertion->get_type() );
+	}
+
+	// The dimensions of the arrays in a declared type, as in int a[N]. (A dimension the translator hoisted into a
+	// generated local is walked there.) This visits other nodes with this pass, which leaves GuardValue pointing at
+	// the finished guard of the last of them, so it is only called from a postvisit.
+	void dimensionRefs( const ast::Type * type ) {
+		while ( type ) {
+			if ( auto array = dynamic_cast<const ast::ArrayType *>( type ) ) {
+				if ( array->dimension ) array->dimension->accept( *visitor );
+				type = array->base;
+			} else if ( auto ptr = dynamic_cast<const ast::PointerType *>( type ) ) {	// a decayed array parameter
+				if ( ptr->dimension ) ptr->dimension->accept( *visitor );
+				type = ptr->base;
+			} else if ( auto ref = dynamic_cast<const ast::ReferenceType *>( type ) ) {
+				type = ref->base;
+			} else {
+				break;
+			} // if
+		} // while
+	}
+
+	void noteWith( const ast::Expr * expr ) {
+		if ( expr && expr->location.isSet() ) withExprs.insert( rangeKey( expr->location ) );
+	}
+
+	void previsit( const ast::WithStmt * stmt ) {
+		for ( const ast::Expr * expr : stmt->exprs ) noteWith( expr );
+	}
+
+	// Labels defined on a statement: L: stmt. The label's location starts at its name.
+	void labelDecls( const ast::Stmt * stmt ) {
+		if ( context != Context::Function ) return;
+		for ( const ast::Label & label : stmt->labels ) {
+			CodeLocation loc = label.location;
+			if ( ! d.inFocus( loc ) || loc.first_column < 0 || label.name.empty() ) continue;
+			loc.last_line = loc.first_line;
+			loc.last_pline = loc.first_pline;
+			loc.last_column = loc.first_column + (int)label.name.size();
+			if ( spells( loc, label.name ) != Spelling::Yes ) continue;	// generated labels
+			if ( d.addLabel( loc, label.name, parent ) >= 0 ) labels.emplace( label.name, labelKey( loc, label.name ) );
+		} // for
+	}
+
+	void previsit( const ast::Stmt * stmt ) { labelDecls( stmt ); }
+
+	// goto L, break L, continue L and fallthrough L. The statement starts at the keyword and the label follows it;
+	// the branch's own target can be a label the translator made (multi-level exits become gotos).
+	void previsit( const ast::BranchStmt * stmt ) {
+		labelDecls( stmt );
+		const CodeLocation & loc = stmt->location;
+		if ( context != Context::Function || ! d.inFocus( loc ) || loc.first_column < 0 ) return;
+		static const std::set<std::string> keywords = { "goto", "break", "continue", "fallthrough", "fallthru" };
+		auto isId = []( char c ) { return isalnum( (unsigned char)c ) || c == '_'; };
+		for ( const std::string * piece : source.pieces( loc.filename.str(), loc.first_line, loc.first_pline ) ) {
+			const std::string & text = *piece;
+			size_t at = loc.first_column, end = at;
+			if ( at >= text.size() ) continue;
+			while ( end < text.size() && isId( text[end] ) ) end += 1;
+			if ( ! keywords.count( text.substr( at, end - at ) ) ) continue;
+			at = text.find_first_not_of( " \t", end );
+			if ( at == std::string::npos || ! ( isalpha( (unsigned char)text[at] ) || text[at] == '_' ) ) return;
+			end = at;
+			while ( end < text.size() && isId( text[end] ) ) end += 1;
+			std::string name = text.substr( at, end - at );
+			if ( name == "default" ) return;			// fallthrough default
+			CodeLocation use = loc;
+			use.last_line = use.first_line;
+			use.first_column = (int)at;
+			use.last_column = (int)end;
+			use.first_pline = use.last_pline = source.inputLine( piece );
+			labelUses.emplace_back( use, name );
+			return;
+		} // for
 	}
 
 	void previsit( const ast::ObjectDecl * decl ) {
@@ -960,6 +1262,10 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards 
 			visit_children = local() && d.inFocus( decl->location ) && d.isGenerated( decl );
 			if ( visit_children ) GuardValue( inGenerated ) = true;
 		} // if
+	}
+
+	void postvisit( const ast::ObjectDecl * decl ) {
+		if ( ! skip.count( decl ) && ( local() || d.inFocus( decl->location ) ) ) dimensionRefs( decl->type );
 	}
 
 	void previsit( const ast::InlineMemberDecl * decl ) {
@@ -1003,11 +1309,13 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards 
 		if ( d.inFocus( decl->location ) ) {
 			typeRefs( d, decl->base );
 			typeRefs( d, decl->init );
+			for ( const ast::DeclWithType * assertion : decl->assertions ) assertionRefs( assertion );
 		} // if
 		visit_children = false;
 	}
 
 	void previsit( const ast::CompoundStmt * stmt ) {
+		labelDecls( stmt );
 		bool isBody = stmt == paramBody;
 		if ( ! d.inFocus( stmt->location ) || stmt->location.first_column < 0 || inGenerated || stmt == wrapperBody
 				|| ( ! isBody && ! blockStart( stmt->location ) ) ) {
@@ -1051,51 +1359,72 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards 
 	}
 
 	// An operator written as one (v + w, -x, i++) is a call of its function at the operator token. The
-	// application covers the whole expression, so the token is looked for between the operands.
+	// application covers the whole expression, so the token is looked for between the operands, which can be on
+	// different lines.
 	void operatorRef( const ast::ApplicationExpr * expr, const ast::Decl * decl ) {
 		const std::string & name = decl->name;
+		if ( name == "?[?]" ) return bracketRef( expr, decl, '[', ']' );
+		if ( name == "?()" ) return bracketRef( expr, decl, '(', ')' );
+		if ( name == "?{}" ) return bracketRef( expr, decl, '{', '}' );
 		if ( name.size() < 2 || name.find( '?' ) == std::string::npos ) return;
 		bool binary = name.size() >= 3 && name.front() == '?' && name.back() == '?';
 		bool prefix = ! binary && name.back() == '?';
 		std::string symbol = binary ? name.substr( 1, name.size() - 2 ) : prefix ? name.substr( 0, name.size() - 1 ) : name.substr( 1 );
-		static const std::string opChars = "+-*/%<>=!&|^~\\";
-		if ( symbol.empty() || symbol.find_first_not_of( opChars ) != std::string::npos ) return;	// ?{}, ?[?], ?()
+		if ( symbol.empty() || symbol.find_first_not_of( opChars ) != std::string::npos ) return;	// ^?{}
 		if ( expr->args.size() != ( binary ? 2u : 1u ) ) return;
 		const CodeLocation & whole = expr->location, & first = expr->args.front()->location;
 		const CodeLocation & last = expr->args.back()->location;
 		if ( ! d.inFocus( whole ) || first.isUnset() || last.isUnset() ) return;
-		// [from, to) on one line
-		int line, from, to;
+		int fromLine, fromCol, toLine, toCol, fromPline;
 		if ( binary ) {
-			line = first.last_line, from = first.last_column, to = last.first_column;
-			if ( last.first_line != line ) return;
+			fromLine = first.last_line, fromCol = first.last_column, toLine = last.first_line, toCol = last.first_column;
+			fromPline = first.last_pline;
 		} else if ( prefix ) {
-			line = whole.first_line, from = whole.first_column, to = first.first_column;
-			if ( first.first_line != line ) return;
+			fromLine = whole.first_line, fromCol = whole.first_column, toLine = first.first_line, toCol = first.first_column;
+			fromPline = whole.first_pline;
 		} else {
-			line = first.last_line, from = first.last_column, to = whole.last_column;
-			if ( whole.last_line != line ) return;
+			fromLine = first.last_line, fromCol = first.last_column, toLine = whole.last_line, toCol = whole.last_column;
+			fromPline = first.last_pline;
 		} // if
-		if ( from < 0 || to <= from ) return;
-		const std::vector<std::string> * pieces = source.line( whole.filename.str(), line );
-		if ( ! pieces ) return;
-		for ( const std::string & text : *pieces ) {
-			if ( (size_t)to > text.size() ) continue;
-			int found = -1, count = 0;
-			for ( size_t at = text.find( symbol, from ); at != std::string::npos && at + symbol.size() <= (size_t)to;
-					at = text.find( symbol, at + 1 ) ) {
-				bool alone = ( at == 0 || opChars.find( text[at - 1] ) == std::string::npos )
-					&& ( at + symbol.size() >= text.size() || opChars.find( text[at + symbol.size()] ) == std::string::npos );
-				if ( alone ) found = (int)at, count += 1;
-			} // for
-			if ( count != 1 ) continue;
-			CodeLocation loc = whole;
-			loc.first_line = loc.last_line = line;
-			loc.first_column = found;
-			loc.last_column = found + (int)symbol.size();
-			d.addOperatorRef( loc, decl );
-			return;
-		} // for
+		int line, col, pline;
+		if ( ! findOperator( whole.filename.str(), fromLine, fromCol, fromPline, toLine, toCol, symbol, line, col, pline ) ) return;
+		CodeLocation loc = whole;
+		loc.first_line = loc.last_line = line;
+		loc.first_column = col;
+		loc.last_column = col + (int)symbol.size();
+		loc.first_pline = loc.last_pline = pline;
+		d.addOperatorRef( loc, decl );
+	}
+
+	// ?[?], ?() and ?{} are written as a bracket after their first argument: a[i], f( x ), p{ 1 }, and in a
+	// declaration Point p = { 1 }, where the first argument is the declared name. The ref is the opening bracket.
+	// The next argument has to end after it, which rules out the translator's own calls at the declaration (the
+	// loop that constructs each element of an array).
+	void bracketRef( const ast::ApplicationExpr * expr, const ast::Decl * decl, char open, char close ) {
+		if ( expr->args.empty() ) return;
+		const CodeLocation & first = expr->args.front()->location;
+		if ( ! d.inFocus( first ) || first.last_column < 0 ) return;
+		const std::string file = first.filename.str();
+		int line, col, pline;
+		char c;
+		if ( ! nextNonBlank( file, first.last_line, first.last_column, first.last_pline, line, col, pline, c ) ) return;
+		if ( c == '=' && open == '{' && ! nextNonBlank( file, line, col + 1, pline, line, col, pline, c ) ) return;
+		if ( c != open ) return;
+		if ( expr->args.size() > 1 ) {
+			const CodeLocation & next = expr->args[1]->location;
+			if ( next.isUnset() || next.filename.str() != file ) return;
+			if ( std::make_pair( next.last_line, next.last_column ) <= std::make_pair( line, col ) ) return;
+		} else {
+			int closeLine, closeCol, closePline;
+			char after;
+			if ( ! nextNonBlank( file, line, col + 1, pline, closeLine, closeCol, closePline, after ) || after != close ) return;
+		} // if
+		CodeLocation loc = first;
+		loc.first_line = loc.last_line = line;
+		loc.first_column = col;
+		loc.last_column = col + 1;
+		loc.first_pline = loc.last_pline = pline;
+		d.addOperatorRef( loc, decl );
 	}
 
 	void postvisit( const ast::VariableExpr * expr ) {
@@ -1105,12 +1434,27 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards 
 		if ( ! call && spelledUse( expr->location, expr->var ) ) d.addExpr( expr->location, expr->result );
 	}
 
+	// A name found through a with clause becomes a member of the with clause's expression; in x.f and x->f the
+	// aggregate is x. Conversions and anonymous members in between are skipped.
+	bool foundThroughWith( const ast::MemberExpr * expr ) const {
+		const ast::Expr * aggregate = expr->aggregate.get();
+		while ( aggregate ) {
+			if ( auto cast = dynamic_cast<const ast::CastExpr *>( aggregate ) ) {
+				aggregate = cast->arg.get();
+			} else if ( auto member = dynamic_cast<const ast::MemberExpr *>( aggregate ) ;
+					member && member->member && spells( member->location, member->member->name ) != Spelling::Yes ) {
+				aggregate = member->aggregate.get();
+			} else {
+				break;
+			} // if
+		} // while
+		if ( ! aggregate || aggregate->location.isUnset() ) return ! followsSelection( expr->location, expr->member->name );
+		return withExprs.count( rangeKey( aggregate->location ) );
+	}
+
 	void postvisit( const ast::MemberExpr * expr ) {
 		if ( ! expr->member ) return;
-		// A name found through a with clause becomes a member of the with expression; x.f and x->f have the
-		// selection operator before the name.
-		bool viaWith = ! followsSelection( expr->location, expr->member->name );
-		d.addRef( expr->location, expr->member.get(), viaWith ? "with" : "member" );
+		d.addRef( expr->location, expr->member.get(), foundThroughWith( expr ) ? "with" : "member" );
 		if ( spells( expr->location, expr->member->name ) == Spelling::Yes ) d.addExpr( expr->location, expr->result );
 	}
 
@@ -1184,8 +1528,11 @@ void recordTypedefUse( const CodeLocation & use, const ast::TypedefDecl * decl )
 	sideRefs.push_back( { use, 2, decl->name, decl->location } );
 }
 
-void recordTraitUse( const CodeLocation & use, const ast::TraitDecl * decl ) {
-	if ( decl ) sideRefs.push_back( { use, 1, decl->name, decl->location } );
+void recordTraitUse( const ast::TraitInstType * inst ) {
+	if ( ! inst || inst->location.isUnset() ) return;
+	if ( inst->base ) sideRefs.push_back( { inst->location, 1, inst->base->name, inst->base->location } );
+	ast::Pass<SideTypeRefCore> pass;
+	for ( const ast::Expr * arg : inst->params ) arg->accept( pass );
 }
 
 void recordException( const CodeLocation & location, const std::string & name ) {
@@ -1206,6 +1553,16 @@ void recordTypeParam( const CodeLocation & location, int tyClass ) {
 
 void recordResolvedExpr( const ast::Expr * expr ) {
 	if ( expr ) resolvedExprs.emplace_back( expr );
+}
+
+void recordParam( const ast::DeclWithType * param ) {
+	if ( ! param || param->location.isUnset() ) return;
+	const ast::Type * type = param->get_type();
+	if ( ! dynamic_cast<const ast::ArrayType *>( type ) && ! dynamic_cast<const ast::FunctionType *>( type ) ) return;
+	ast::Pass<Printable> printable;
+	type->accept( printable );
+	if ( ! printable.core.ok ) return;
+	writtenParams[placeKey( param->location )] = { typeText( type ), typeText( type, param->name ) };
 }
 
 static void loadSource() {
@@ -1234,6 +1591,13 @@ void snapshot( const ast::TranslationUnit & unit ) {
 	dumper = new Dumper;
 	for ( const std::string & file : options.focus ) dumper->focus.insert( file );
 	if ( dumper->focus.empty() && ! source.first().empty() ) dumper->focus.insert( source.first() );
+
+	// Assertions copied from a trait keep the locations of the trait's members.
+	for ( const ast::Decl * decl : unit.decls ) {
+		if ( auto trait = dynamic_cast<const ast::TraitDecl *>( decl ) ) {
+			for ( const ast::Decl * member : trait->members ) dumper->traitMembers.insert( placeKey( member->location ) );
+		} // if
+	} // for
 
 	ast::Pass<DumpCore> pass( *dumper );
 	for ( const ast::Decl * decl : unit.decls ) {

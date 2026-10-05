@@ -22,6 +22,8 @@ namespace ast {
 	class TranslationUnit;
 	class TypedefDecl;
 	class TraitDecl;
+	class TraitInstType;
+	class DeclWithType;
 	class Expr;
 }
 
@@ -32,6 +34,7 @@ struct Options {
 	std::string cOut;									// --lsp-c-out
 	std::vector<std::string> focus;						// --lsp-focus
 	std::string input;									// the preprocessed input file
+	bool stopAfterResolve = false;						// --lsp-stop-after-resolve
 };
 
 // True when --lsp was given. Diagnostics then go into the dump instead of stderr.
@@ -52,7 +55,8 @@ bool hasErrors();
 void recordTypedef( const ast::TypedefDecl * decl, bool global );
 bool isRecordedTypedef( const ast::TypedefDecl * decl );
 void recordTypedefUse( const CodeLocation & use, const ast::TypedefDecl * decl );
-void recordTraitUse( const CodeLocation & use, const ast::TraitDecl * decl );
+// A trait instance in an assertion, and the types named in its arguments.
+void recordTraitUse( const ast::TraitInstType * inst );
 // Exception declarations become plain structs, and vtable( E ) a vtable struct.
 void recordException( const CodeLocation & location, const std::string & name );
 void recordExceptionUse( const CodeLocation & use, const std::string & name );
@@ -62,6 +66,8 @@ void recordRename( const std::string & newName, const std::string & oldName );
 void recordTypeParam( const CodeLocation & location, int tyClass );
 // An expression that resolution replaces with its type (sizeof( e ), typeof( e )); its names are still refs.
 void recordResolvedExpr( const ast::Expr * expr );
+// Enum and Pointer Decay turns array and function parameters into pointers; the dump shows them as written.
+void recordParam( const ast::DeclWithType * param );
 
 // Builds decls, refs, exprs and scopes from the resolved (or partially
 // resolved) translation unit. Call at most once.

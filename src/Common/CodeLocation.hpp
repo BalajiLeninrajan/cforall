@@ -21,6 +21,9 @@
 struct CodeLocation {
 	int first_line = -1, first_column = -1, last_line = -1, last_column = -1;
 	Symbol filename = "";
+	/// 1-based lines of the first and last token in the translator's input file, counted without regard to line
+	/// markers, or -1. Only the main input counts them (see parse); the LSP dump uses them.
+	int first_pline = -1, last_pline = -1;
 
 	/// Create a new unset CodeLocation.
 	CodeLocation() = default;
