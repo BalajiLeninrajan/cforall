@@ -26,15 +26,17 @@ ast::Linkage::Spec linkage = ast::Linkage::Cforall;
 TypedefTable typedefTable;
 DeclarationNode * parseTree = nullptr;
 
-void parse( FILE * input, ast::Linkage::Spec linkage, bool alwaysExit ) {
+void parse( FILE * input, ast::Linkage::Spec linkage, bool alwaysExit, bool countLines ) {
 	extern int yyparse( void );
 	extern FILE * yyin;
 	extern int yylineno;
+	extern int yypline;
 
 	// Set global information.
 	::linkage = linkage;
 	yyin = input;
 	yylineno = 1;
+	yypline = countLines ? 1 : 0;
 
 	int parseStatus = yyparse();
 	fclose( input );

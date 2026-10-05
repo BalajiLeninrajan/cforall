@@ -35,8 +35,10 @@
 	column += yyleng; \
 	yylloc.last_column = column; \
 	yylloc.last_line = yylineno; \
-	yylloc.filename = yyfilename ? yyfilename : "";
+	yylloc.filename = yyfilename ? yyfilename : ""; \
+	setPline( yylloc, yytext, yyleng );
 unsigned int column = 0;								// position of the end of the last token parsed
+int yypline = 0;										// line of the next character in the input file, 0 => not counted
 
 #include <string>
 #include <cstdio>										// FILENAME_MAX
@@ -55,6 +57,20 @@ using namespace std;
 #include "parser.hh"                                    // generated info
 
 string * build_postfix_name( string * name );
+
+// Records the token's lines in the input file itself, which line markers do not change (CodeLocation::first_pline).
+static void setPline( CodeLocation & loc, const char * text, long length ) {
+	if ( yypline <= 0 ) {
+		loc.first_pline = loc.last_pline = -1;
+		return;
+	} // if
+	loc.first_pline = loc.last_pline = yypline;
+	for ( long i = 0; i < length; i += 1 ) {
+		if ( text[i] != '\n' ) continue;
+		yypline += 1;
+		if ( i + 1 < length ) loc.last_pline = yypline;	// a newline ending the token is not part of a later line
+	} // for
+}
 
 char * yyfilename;
 string * strtext;										// accumulate parts of character and string constant value

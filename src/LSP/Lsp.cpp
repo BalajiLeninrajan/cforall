@@ -95,6 +95,9 @@ class SourceText {
 	// A line has several pieces when cpp split it (see load()); columns restart in each piece.
 	std::unordered_map<std::string, std::unordered_map<int, std::vector<std::string>>> lines;
 	std::string firstFile;
+	// The input line of each stored piece and back (CodeLocation::first_pline).
+	std::unordered_map<const std::string *, int> plineOf;
+	std::unordered_map<int, const std::string *> pieceAt;
   public:
 	void load( const std::string & path ) {
 		std::ifstream in( path, std::ios::binary );
@@ -112,8 +115,11 @@ class SourceText {
 		int lastLine = -1;
 		bool continues = false;
 		int depth = 0;
+		int pline = 1;									// the input line of cur
+		// Stored pieces as (line, index) and input line; pieces move while their line grows.
+		std::vector<std::tuple<std::vector<std::string> *, size_t, int>> stored;
 		size_t pos = 0;
-		while ( pos < text.size() ) {
+		for ( ; pos < text.size(); pline += 1 ) {
 			size_t end = text.find( '\n', pos );
 			if ( end == std::string::npos ) end = text.size();
 			std::string_view cur( text.data() + pos, end - pos );
@@ -129,10 +135,14 @@ class SourceText {
 				// The main file: the first code outside any include and outside cpp's <built-in> and <command-line>.
 				if ( firstFile.empty() && depth == 0 && ! file.empty() && file[0] != '<' ) firstFile = file;
 				if ( continues ) {
-					if ( last ) last->emplace_back( cur );
+					if ( last ) {
+						last->emplace_back( cur );
+						stored.emplace_back( last, last->size() - 1, pline );
+					} // if
 				} else {
 					auto [it, added] = lines[file].emplace( line, std::vector<std::string>{ std::string( cur ) } );
 					last = added ? &it->second : nullptr;	// keeps the first copy of a twice-included line
+					if ( added ) stored.emplace_back( last, 0, pline );
 				} // if
 				continues = false;
 				lastFile = file;
@@ -140,7 +150,12 @@ class SourceText {
 				line += 1;
 			} // if
 			pos = end + 1;
-		} // while
+		} // for
+		for ( auto & [owner, index, at] : stored ) {
+			const std::string * piece = &(*owner)[index];
+			plineOf.emplace( piece, at );
+			pieceAt.emplace( at, piece );
+		} // for
 	}
 
 	// Same shape as the lexer's line-directive rule: # N "file" flags... `flags` has bit 0 set for flag 1 (entering
@@ -176,6 +191,29 @@ class SourceText {
 		return l == f->second.end() ? nullptr : &l->second;
 	}
 
+	// The pieces of a line, the one at input line `pline` first when it is one of them.
+	std::vector<const std::string *> pieces( const std::string & file, int line, int pline ) const {
+		std::vector<const std::string *> out;
+		const std::vector<std::string> * all = this->line( file, line );
+		if ( ! all ) return out;
+		auto at = pieceAt.find( pline );
+		const std::string * first = nullptr;
+		for ( const std::string & s : *all ) {
+			if ( at != pieceAt.end() && at->second == &s ) first = &s;
+		} // for
+		if ( first ) out.push_back( first );
+		for ( const std::string & s : *all ) {
+			if ( &s != first ) out.push_back( &s );
+		} // for
+		return out;
+	}
+
+	// The input line of a piece, or -1.
+	int inputLine( const std::string * piece ) const {
+		auto it = plineOf.find( piece );
+		return it == plineOf.end() ? -1 : it->second;
+	}
+
 	bool hasFile( const std::string & file ) const { return lines.count( file ); }
 	const std::string & first() const { return firstFile; }
 };
@@ -185,19 +223,18 @@ SourceText source;
 enum class Spelling { Yes, No, Unknown };
 
 // The piece of the line at `loc` whose text at the range spells `name`, ignoring whitespace inside the range (so
-// "?{ }" spells "?{}"). A split line has several pieces and the location does not say which one it is in.
+// "?{ }" spells "?{}"). A split line has several pieces; the one at the location's input line is tried first.
 const std::string * spellingPiece( const CodeLocation & loc, const std::string & name ) {
 	if ( loc.isUnset() || loc.first_column < 0 || name.empty() ) return nullptr;
 	if ( loc.last_line != loc.first_line || loc.last_column <= loc.first_column ) return nullptr;
-	const std::vector<std::string> * pieces = source.line( loc.filename.str(), loc.first_line );
-	if ( ! pieces ) return nullptr;
-	for ( const std::string & text : *pieces ) {
+	for ( const std::string * piece : source.pieces( loc.filename.str(), loc.first_line, loc.first_pline ) ) {
+		const std::string & text = *piece;
 		if ( (size_t)loc.last_column > text.size() ) continue;
 		std::string word;
 		for ( char c : text.substr( loc.first_column, loc.last_column - loc.first_column ) ) {
 			if ( c != ' ' && c != '\t' ) word += c;
 		} // for
-		if ( word == name ) return &text;
+		if ( word == name ) return piece;
 	} // for
 	return nullptr;
 }
@@ -247,18 +284,20 @@ bool followsSelection( const CodeLocation & loc, const std::string & name ) {
 	return false;
 }
 
-// The first non-blank character at or after (line, col), looking a few lines ahead. On a split line the first piece
-// long enough is used.
-bool nextNonBlank( const std::string & file, int line, int col, int & atLine, int & atCol, char & c ) {
-	for ( int n = 0; n < 8; n += 1, line += 1, col = 0 ) {
-		const std::vector<std::string> * pieces = source.line( file, line );
-		if ( ! pieces ) continue;
-		for ( const std::string & text : *pieces ) {
+// The first non-blank character at or after (line, col), looking a few lines ahead, and the input line of the piece
+// it is in. On a split line the piece at input line `pline` is tried first on the first line, then the first piece
+// long enough.
+bool nextNonBlank( const std::string & file, int line, int col, int pline, int & atLine, int & atCol, int & atPline,
+		char & c ) {
+	for ( int n = 0; n < 8; n += 1, line += 1, col = 0, pline = -1 ) {
+		for ( const std::string * piece : source.pieces( file, line, pline ) ) {
+			const std::string & text = *piece;
 			if ( col < 0 || (size_t)col > text.size() ) continue;
 			size_t i = text.find_first_not_of( " \t\r", col );
 			if ( i == std::string::npos ) break;		// the rest of the line is blank
 			atLine = line;
 			atCol = (int)i;
+			atPline = source.inputLine( piece );
 			c = text[i];
 			return true;
 		} // for
@@ -269,17 +308,17 @@ bool nextNonBlank( const std::string & file, int line, int col, int & atLine, in
 const std::string opChars = "+-*/%<>=!&|^~\\";
 
 // The one occurrence of the operator `symbol` between (fromLine, fromCol) and (toLine, toCol) that is not part of a
-// longer operator. Within one line, the first piece of a split line with exactly one occurrence wins; across lines
-// there must be exactly one in all.
-bool findOperator( const std::string & file, int fromLine, int fromCol, int toLine, int toCol,
-		const std::string & symbol, int & atLine, int & atCol ) {
+// longer operator, and the input line of the piece it is in. Within one line, the first piece of a split line with
+// exactly one occurrence wins, trying the piece at input line `fromPline` first; across lines there must be exactly
+// one in all.
+bool findOperator( const std::string & file, int fromLine, int fromCol, int fromPline, int toLine, int toCol,
+		const std::string & symbol, int & atLine, int & atCol, int & atPline ) {
 	if ( fromLine < 1 || fromCol < 0 || toCol < 0 || toLine < fromLine || toLine - fromLine > 8 ) return false;
 	if ( fromLine == toLine && toCol <= fromCol ) return false;
 	int count = 0;
 	for ( int line = fromLine; line <= toLine; line += 1 ) {
-		const std::vector<std::string> * pieces = source.line( file, line );
-		if ( ! pieces ) continue;
-		for ( const std::string & text : *pieces ) {
+		for ( const std::string * piece : source.pieces( file, line, line == fromLine ? fromPline : -1 ) ) {
+			const std::string & text = *piece;
 			size_t from = line == fromLine ? fromCol : 0, to = line == toLine ? toCol : text.size();
 			if ( to > text.size() || from > to ) continue;
 			int found = -1, here = 0;
@@ -293,12 +332,14 @@ bool findOperator( const std::string & file, int fromLine, int fromCol, int toLi
 				if ( here != 1 ) continue;
 				atLine = line;
 				atCol = found;
+				atPline = source.inputLine( piece );
 				return true;
 			} // if
 			if ( here > 0 ) {
 				count += here;
 				atLine = line;
 				atCol = found;
+				atPline = source.inputLine( piece );
 			} // if
 		} // for
 	} // for
@@ -311,6 +352,7 @@ bool findOperator( const std::string & file, int fromLine, int fromCol, int toLi
 json rangeJson( const CodeLocation & loc, bool withFile ) {
 	int line = loc.first_line, col = std::max( loc.first_column, 0 );
 	int endLine = loc.last_line, endCol = loc.last_column;
+	int pline = loc.first_pline, endPline = loc.last_pline;
 	if ( loc.first_column < 0 ) {						// only the line is known: cover it
 		const std::vector<std::string> * pieces = source.line( loc.filename.str(), line );
 		endLine = line;
@@ -318,9 +360,12 @@ json rangeJson( const CodeLocation & loc, bool withFile ) {
 		if ( pieces ) {
 			for ( const std::string & text : *pieces ) endCol = std::max( endCol, (int)text.size() );
 		} // if
-	} else if ( endLine < line || ( endLine == line && endCol < col ) ) {
+		pline = endPline = -1;							// the columns are not those of one input line
+	} else if ( endLine < line || ( endLine == line && ( pline > 0 && endPline > 0 && endPline != pline
+			? endPline < pline : endCol < col ) ) ) {	// a range can end on a later piece of a split line
 		endLine = line;
 		endCol = col;
+		endPline = pline;
 	} // if
 	json j;
 	if ( withFile ) j["file"] = loc.filename.str();
@@ -328,6 +373,8 @@ json rangeJson( const CodeLocation & loc, bool withFile ) {
 	j["col"] = col;
 	j["endLine"] = endLine;
 	j["endCol"] = endCol;
+	if ( pline > 0 ) j["pline"] = pline;
+	if ( endPline > 0 ) j["endPline"] = endPline;
 	return j;
 }
 
@@ -1150,6 +1197,7 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards,
 			CodeLocation loc = label.location;
 			if ( ! d.inFocus( loc ) || loc.first_column < 0 || label.name.empty() ) continue;
 			loc.last_line = loc.first_line;
+			loc.last_pline = loc.first_pline;
 			loc.last_column = loc.first_column + (int)label.name.size();
 			if ( spells( loc, label.name ) != Spelling::Yes ) continue;	// generated labels
 			if ( d.addLabel( loc, label.name, parent ) >= 0 ) labels.emplace( label.name, labelKey( loc, label.name ) );
@@ -1164,11 +1212,10 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards,
 		labelDecls( stmt );
 		const CodeLocation & loc = stmt->location;
 		if ( context != Context::Function || ! d.inFocus( loc ) || loc.first_column < 0 ) return;
-		const std::vector<std::string> * pieces = source.line( loc.filename.str(), loc.first_line );
-		if ( ! pieces ) return;
 		static const std::set<std::string> keywords = { "goto", "break", "continue", "fallthrough", "fallthru" };
 		auto isId = []( char c ) { return isalnum( (unsigned char)c ) || c == '_'; };
-		for ( const std::string & text : *pieces ) {
+		for ( const std::string * piece : source.pieces( loc.filename.str(), loc.first_line, loc.first_pline ) ) {
+			const std::string & text = *piece;
 			size_t at = loc.first_column, end = at;
 			if ( at >= text.size() ) continue;
 			while ( end < text.size() && isId( text[end] ) ) end += 1;
@@ -1183,6 +1230,7 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards,
 			use.last_line = use.first_line;
 			use.first_column = (int)at;
 			use.last_column = (int)end;
+			use.first_pline = use.last_pline = source.inputLine( piece );
 			labelUses.emplace_back( use, name );
 			return;
 		} // for
@@ -1321,20 +1369,24 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards,
 		const CodeLocation & whole = expr->location, & first = expr->args.front()->location;
 		const CodeLocation & last = expr->args.back()->location;
 		if ( ! d.inFocus( whole ) || first.isUnset() || last.isUnset() ) return;
-		int fromLine, fromCol, toLine, toCol;
+		int fromLine, fromCol, toLine, toCol, fromPline;
 		if ( binary ) {
 			fromLine = first.last_line, fromCol = first.last_column, toLine = last.first_line, toCol = last.first_column;
+			fromPline = first.last_pline;
 		} else if ( prefix ) {
 			fromLine = whole.first_line, fromCol = whole.first_column, toLine = first.first_line, toCol = first.first_column;
+			fromPline = whole.first_pline;
 		} else {
 			fromLine = first.last_line, fromCol = first.last_column, toLine = whole.last_line, toCol = whole.last_column;
+			fromPline = first.last_pline;
 		} // if
-		int line, col;
-		if ( ! findOperator( whole.filename.str(), fromLine, fromCol, toLine, toCol, symbol, line, col ) ) return;
+		int line, col, pline;
+		if ( ! findOperator( whole.filename.str(), fromLine, fromCol, fromPline, toLine, toCol, symbol, line, col, pline ) ) return;
 		CodeLocation loc = whole;
 		loc.first_line = loc.last_line = line;
 		loc.first_column = col;
 		loc.last_column = col + (int)symbol.size();
+		loc.first_pline = loc.last_pline = pline;
 		d.addOperatorRef( loc, decl );
 	}
 
@@ -1347,24 +1399,25 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards,
 		const CodeLocation & first = expr->args.front()->location;
 		if ( ! d.inFocus( first ) || first.last_column < 0 ) return;
 		const std::string file = first.filename.str();
-		int line, col;
+		int line, col, pline;
 		char c;
-		if ( ! nextNonBlank( file, first.last_line, first.last_column, line, col, c ) ) return;
-		if ( c == '=' && open == '{' && ! nextNonBlank( file, line, col + 1, line, col, c ) ) return;
+		if ( ! nextNonBlank( file, first.last_line, first.last_column, first.last_pline, line, col, pline, c ) ) return;
+		if ( c == '=' && open == '{' && ! nextNonBlank( file, line, col + 1, pline, line, col, pline, c ) ) return;
 		if ( c != open ) return;
 		if ( expr->args.size() > 1 ) {
 			const CodeLocation & next = expr->args[1]->location;
 			if ( next.isUnset() || next.filename.str() != file ) return;
 			if ( std::make_pair( next.last_line, next.last_column ) <= std::make_pair( line, col ) ) return;
 		} else {
-			int closeLine, closeCol;
+			int closeLine, closeCol, closePline;
 			char after;
-			if ( ! nextNonBlank( file, line, col + 1, closeLine, closeCol, after ) || after != close ) return;
+			if ( ! nextNonBlank( file, line, col + 1, pline, closeLine, closeCol, closePline, after ) || after != close ) return;
 		} // if
 		CodeLocation loc = first;
 		loc.first_line = loc.last_line = line;
 		loc.first_column = col;
 		loc.last_column = col + 1;
+		loc.first_pline = loc.last_pline = pline;
 		d.addOperatorRef( loc, decl );
 	}
 

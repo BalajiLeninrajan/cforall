@@ -226,7 +226,7 @@ int main( int argc, char * argv[] ) {
 			} // if
 		} // if
 
-		parse( input, libcfap ? ast::Linkage::Intrinsic : ast::Linkage::Cforall, yydebug );
+		parse( input, libcfap ? ast::Linkage::Intrinsic : ast::Linkage::Cforall, yydebug, true );
 
 		transUnit = buildUnit();
 

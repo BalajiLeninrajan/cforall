@@ -133,6 +133,7 @@ static CodeLocation span( const CodeLocation & first, const CodeLocation & last 
 	CodeLocation loc = first;
 	loc.last_line = last.last_line;
 	loc.last_column = last.last_column;
+	loc.last_pline = last.last_pline;
 	return loc;
 } // span
 
@@ -359,10 +360,13 @@ if ( N ) {																		\
 	(Cur).last_line    = YYRHSLOC( Rhs, last_ ).last_line;						\
 	(Cur).last_column  = YYRHSLOC( Rhs, last_ ).last_column;					\
 	(Cur).filename     = YYRHSLOC( Rhs, first_ ).filename;						\
+	(Cur).first_pline  = YYRHSLOC( Rhs, first_ ).first_pline;					\
+	(Cur).last_pline   = YYRHSLOC( Rhs, last_ ).last_pline;						\
 } else {																		\
 	(Cur).first_line   = (Cur).last_line = YYRHSLOC( Rhs, 0 ).last_line;		\
 	(Cur).first_column = (Cur).last_column = YYRHSLOC( Rhs, 0 ).last_column;	\
 	(Cur).filename     = YYRHSLOC( Rhs, 0 ).filename;							\
+	(Cur).first_pline  = (Cur).last_pline = YYRHSLOC( Rhs, 0 ).last_pline;		\
 }
 %}
 
