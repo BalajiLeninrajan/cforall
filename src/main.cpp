@@ -329,6 +329,9 @@ int main( int argc, char * argv[] ) {
 				return lspFinish( false );
 			} // if
 			lspResolved = true;
+			if ( LSP::options.stopAfterResolve ) {		// the later passes cost time and only add errors
+				return lspFinish( true );
+			} // if
 		} else {
 			PASS( "Resolve", ResolvExpr::resolve, transUnit );
 		} // if
@@ -443,7 +446,7 @@ int main( int argc, char * argv[] ) {
 
 static const char optstring[] = ":c:ghilLmNnpdP:S:twW:D:";
 
-enum { PreludeDir = 128, LspOut, LspFocus, LspCOut };
+enum { PreludeDir = 128, LspOut, LspFocus, LspCOut, LspStopAfterResolve };
 static struct option long_opts[] = {
 	{ "colors", required_argument, nullptr, 'c' },
 	{ "gdb", no_argument, nullptr, 'g' },
@@ -461,6 +464,7 @@ static struct option long_opts[] = {
 	{ "lsp", required_argument, nullptr, LspOut },
 	{ "lsp-focus", required_argument, nullptr, LspFocus },
 	{ "lsp-c-out", required_argument, nullptr, LspCOut },
+	{ "lsp-stop-after-resolve", no_argument, nullptr, LspStopAfterResolve },
 	{ "statistics", required_argument, nullptr, 'S' },
 	{ "tree", no_argument, nullptr, 't' },
 	{ "", no_argument, nullptr, 0 },					// -w
@@ -486,6 +490,7 @@ static const char * description[] = {
 	"<file> LSP mode: write declarations, references and diagnostics as JSON to file", // no flag
 	"<file> LSP mode: a file being edited (repeatable)", // no flag
 	"<file> LSP mode: also generate C into file",	// no flag
+	"LSP mode: skip the passes after Resolve and code generation", // no flag
 	"<option-list> enable profiling information: counters, heap, time, all, none", // -S
 	"building cfa standard lib",						// -t
 	"",													// -w
@@ -619,6 +624,9 @@ static void parse_cmdline( int argc, char * argv[] ) {
 			break;
 		  case LspCOut:
 			LSP::options.cOut = optarg;
+			break;
+		  case LspStopAfterResolve:
+			LSP::options.stopAfterResolve = true;
 			break;
 		  case 'S':										// enable profiling information, argument comma separated list of names
 			Stats::parse_params( optarg );

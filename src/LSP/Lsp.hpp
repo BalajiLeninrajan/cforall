@@ -34,6 +34,7 @@ struct Options {
 	std::string cOut;									// --lsp-c-out
 	std::vector<std::string> focus;						// --lsp-focus
 	std::string input;									// the preprocessed input file
+	bool stopAfterResolve = false;						// --lsp-stop-after-resolve
 };
 
 // True when --lsp was given. Diagnostics then go into the dump instead of stderr.
