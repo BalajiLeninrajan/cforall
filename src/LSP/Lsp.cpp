@@ -1510,7 +1510,9 @@ void addErrors( const SemanticErrorException & errors ) {
 }
 
 void addInternalError( const std::string & text ) {
-	addDiagnostic( CodeLocation(), "error", "internal translator error: " + text );
+	// Kept after syntax errors too: a crash is never about the code the parser skipped.
+	errorSeen = true;
+	diagnostics.push_back( { CodeLocation(), "error", "internal translator error: " + text } );
 }
 
 bool hasErrors() {
