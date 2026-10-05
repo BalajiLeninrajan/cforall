@@ -1117,7 +1117,8 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards,
 	}
 
 	// The dimensions of the arrays in a declared type, as in int a[N]. (A dimension the translator hoisted into a
-	// generated local is walked there.)
+	// generated local is walked there.) This visits other nodes with this pass, which leaves GuardValue pointing at
+	// the finished guard of the last of them, so it is only called from a postvisit.
 	void dimensionRefs( const ast::Type * type ) {
 		while ( type ) {
 			if ( auto array = dynamic_cast<const ast::ArrayType *>( type ) ) {
@@ -1198,10 +1199,7 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards,
 		} // if
 		// Inside a function, return values are declared by the translator (_retval_f), but their types are the
 		// ones written in the source.
-		if ( local() || d.inFocus( decl->location ) ) {
-			typeRefs( d, decl->type );
-			dimensionRefs( decl->type );
-		} // if
+		if ( local() || d.inFocus( decl->location ) ) typeRefs( d, decl->type );
 		int id;
 		if ( ! declare( decl, kind, id ) ) {
 			// Desugaring moves user expressions into the initializers of generated locals (tuple assignment,
@@ -1210,6 +1208,10 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards,
 			visit_children = local() && d.inFocus( decl->location ) && d.isGenerated( decl );
 			if ( visit_children ) GuardValue( inGenerated ) = true;
 		} // if
+	}
+
+	void postvisit( const ast::ObjectDecl * decl ) {
+		if ( ! skip.count( decl ) && ( local() || d.inFocus( decl->location ) ) ) dimensionRefs( decl->type );
 	}
 
 	void previsit( const ast::InlineMemberDecl * decl ) {
