@@ -37,6 +37,8 @@ struct Options {
 // True when --lsp was given. Diagnostics then go into the dump instead of stderr.
 extern bool enabled;
 extern Options options;
+// True once the snapshot holds a cleanly resolved unit. Errors in later passes then leave the dump complete.
+extern bool resolved;
 
 void addDiagnostic( const CodeLocation & location, const char * severity, const std::string & text );
 void addErrors( const SemanticErrorException & errors );
@@ -67,6 +69,12 @@ void snapshot( const ast::TranslationUnit & unit );
 
 // Writes the JSON dump. Returns false if the file could not be written.
 bool write( bool complete );
+
+// Called when the translator is about to die: a failed assertion, abort or a fatal signal. Adds an internal error
+// saying what happened, writes the dump with what was collected so far and exits with status 0. Returns without doing
+// anything when LSP mode is off or a crash is already being handled, and returns after trying when the dump cannot be
+// written; the caller then aborts as usual.
+void crash( const char * what );
 
 } // namespace LSP
 

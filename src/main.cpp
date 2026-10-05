@@ -142,9 +142,6 @@ static void dump( ast::TranslationUnit && transUnit, ostream & out = cout );
 static void backtrace( int start );
 static void initSignals();
 
-// True once the LSP snapshot holds a cleanly resolved unit. Errors in later passes then leave the dump complete.
-static bool lspResolved = false;
-
 // Ends an LSP-mode run by writing the dump. Exit status 0 means the dump was written. Called from main's
 // exception handlers, so it must not throw.
 static int lspFinish( bool complete ) {
@@ -160,6 +157,15 @@ static int lspFinish( bool complete ) {
 		cerr << "*cfa-cpp compilation error* cannot write the LSP dump" << endl;
 	} // try
 	return written ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+// Lets the cfa-lsp tests check that a crash still writes the dump: CFA_LSP_TEST_CRASH=segv crashes before the first
+// pass, =assert fails an assertion after the snapshot.
+static void lspTestCrash( const char * when ) {
+	const char * how = getenv( "CFA_LSP_TEST_CRASH" );
+	if ( ! LSP::enabled || ! how ) return;
+	if ( strcmp( when, "parse" ) == 0 && strcmp( how, "segv" ) == 0 ) raise( SIGSEGV );
+	if ( strcmp( when, "snapshot" ) == 0 ) assertf( strcmp( how, "assert" ) != 0, "requested by CFA_LSP_TEST_CRASH" );
 }
 
 int main( int argc, char * argv[] ) {
@@ -233,6 +239,7 @@ int main( int argc, char * argv[] ) {
 		DUMP( astp, transUnit );
 
 		Stats::Time::StopBlock();
+		lspTestCrash( "parse" );
 
 		PASS( "Hoist Type Decls", Validate::hoistTypeDecls, transUnit );
 
@@ -328,7 +335,8 @@ int main( int argc, char * argv[] ) {
 				// The unresolved parts would trip the later passes.
 				return lspFinish( false );
 			} // if
-			lspResolved = true;
+			LSP::resolved = true;
+			lspTestCrash( "snapshot" );
 		} else {
 			PASS( "Resolve", ResolvExpr::resolve, transUnit );
 		} // if
@@ -394,7 +402,7 @@ int main( int argc, char * argv[] ) {
 			if ( output != &cout ) delete output;
 			LSP::addErrors( e );
 			LSP::snapshot( transUnit );
-			return lspFinish( lspResolved );
+			return lspFinish( LSP::resolved );
 		} // if
 		if ( errorp ) {
 			cerr << "---AST at error:---" << endl;
@@ -408,6 +416,7 @@ int main( int argc, char * argv[] ) {
 		return EXIT_FAILURE;
 	} catch ( std::bad_alloc & ) {
 		cerr << "*cfa-cpp compilation error* std::bad_alloc" << endl;
+		LSP::crash( "out of memory" );
 		backtrace( 1 );
 		abort();
 	} catch ( ... ) {
@@ -424,7 +433,7 @@ int main( int argc, char * argv[] ) {
 		} // try
 		if ( LSP::enabled ) {
 			if ( ! LSP::hasErrors() ) LSP::addInternalError( "translator failed with an unknown exception" );
-			return lspFinish( lspResolved );
+			return lspFinish( LSP::resolved );
 		} // if
 		return EXIT_FAILURE;
 	} // try
@@ -779,6 +788,7 @@ static void Signal( int sig, void (* handler)(int), int flags ) {
 } // Signal
 
 static void sigSegvBusHandler( SIGPARMS ) {
+	LSP::crash( sig == SIGSEGV ? "segmentation fault" : "bus error" );
 	if ( sfp->si_addr == nullptr ) {
 		cerr << "Null pointer (nullptr) dereference." << endl;
 	} else {
@@ -790,6 +800,7 @@ static void sigSegvBusHandler( SIGPARMS ) {
 } // sigSegvBusHandler
 
 static void sigFpeHandler( SIGPARMS ) {
+	LSP::crash( "arithmetic exception (SIGFPE)" );
 	const char * msg;
 
 	switch ( sfp->si_code ) {
@@ -807,6 +818,7 @@ static void sigFpeHandler( SIGPARMS ) {
 } // sigFpeHandler
 
 static void sigAbortHandler( SIGPARMS ) {
+	LSP::crash( "aborted" );							// a failed assertion has already written the dump
 	backtrace( 6 );										// skip first 6 stack frames
 	Signal( SIGABRT, SIG_DFL, SA_SIGINFO );	// reset default signal handler
 	raise( SIGABRT );									// reraise SIGABRT

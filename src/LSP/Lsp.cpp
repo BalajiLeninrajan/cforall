@@ -18,6 +18,8 @@
 
 #include "LSP/Lsp.hpp"
 
+#include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -27,6 +29,8 @@
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+
+#include <unistd.h>
 
 #include <nlohmann/json.hpp>
 
@@ -47,6 +51,7 @@ namespace LSP {
 
 bool enabled = false;
 Options options;
+bool resolved = false;
 
 namespace {
 
@@ -831,6 +836,7 @@ class Dumper {
 };
 
 Dumper * dumper = nullptr;
+bool snapshotDone = false;							// a crash inside snapshot() leaves the dumper half filled
 
 // Records the named types in a type spelled in the source.
 struct TypeRefCore final : public ast::WithShortCircuiting {
@@ -1263,6 +1269,7 @@ void snapshot( const ast::TranslationUnit & unit ) {
 			exc->second.first_column ), "type" );
 	} // for
 	dumper->finish();
+	snapshotDone = true;
 }
 
 // JSON strings must be valid UTF-8, but diagnostics can quote single bytes of a multi-byte character (the lexer
@@ -1298,6 +1305,13 @@ static std::string validUtf8( const std::string & text ) {
 }
 
 bool write( bool complete ) {
+	// The first write moves the snapshot into the document, so a second one (after a crash during the first) has
+	// only the diagnostics.
+	static bool started = false;
+	bool withSnapshot = dumper && snapshotDone && ! started;
+	started = true;
+	if ( ! withSnapshot ) complete = false;
+
 	loadSource();
 	json doc;
 	doc["format"] = 1;
@@ -1330,7 +1344,7 @@ bool write( bool complete ) {
 	} // for
 	doc["diagnostics"] = std::move( diags );
 
-	if ( dumper ) {
+	if ( withSnapshot ) {
 		doc["decls"] = std::move( dumper->decls );
 		doc["refs"] = std::move( dumper->refs );
 		doc["exprs"] = std::move( dumper->exprs );
@@ -1349,6 +1363,21 @@ bool write( bool complete ) {
 	out << doc.dump( -1, ' ', false, json::error_handler_t::replace );
 	out.close();
 	return ! out.fail();
+}
+
+void crash( const char * what ) {
+	static volatile sig_atomic_t entered = 0;
+	if ( ! enabled || entered ) return;
+	entered = 1;
+	// Writing allocates, and after a fatal signal the heap can be corrupt and malloc can hang. The alarm ends the
+	// process instead, and the server reports the signal.
+	alarm( 10 );
+	try {
+		addInternalError( what );
+		if ( write( resolved ) ) _exit( EXIT_SUCCESS );
+	} catch ( ... ) {
+	} // try
+	alarm( 0 );
 }
 
 } // namespace LSP
