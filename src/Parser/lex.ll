@@ -42,6 +42,7 @@ int yypline = 0;										// line of the next character in the input file, 0 => 
 
 #include <string>
 #include <cstdio>										// FILENAME_MAX
+#include <vector>
 using namespace std;
 
 #include "config.h"										// configure info
@@ -74,6 +75,9 @@ static void setPline( CodeLocation & loc, const char * text, long length ) {
 
 char * yyfilename;
 string * strtext;										// accumulate parts of character and string constant value
+// In LSP mode, the '{'s not closed yet. Each one still open at the end of the file gets a '}' from the lexer, so
+// the parser keeps the function being typed in, and the code after it, instead of giving up at the end of the file.
+static vector<CodeLocation> openBraces;
 
 #define RETURN_LOCN(x)		yylval.tok.loc.file = yyfilename; yylval.tok.loc.line = yylineno; return( x )
 #define RETURN_VAL(x)		yylval.tok.str = new string( yytext ); RETURN_LOCN( x )
@@ -442,8 +446,8 @@ zero_t			{ RETURN_VAL(ZERO_T); }					// CFA
 "]"				{ ASCIIOP_RETURN(); }
 "("				{ ASCIIOP_RETURN(); }
 ")"				{ ASCIIOP_RETURN(); }
-"{"				{ ASCIIOP_RETURN(); }
-"}"				{ ASCIIOP_RETURN(); }
+"{"				{ if ( LSP::enabled ) openBraces.push_back( yylloc ); ASCIIOP_RETURN(); }
+"}"				{ if ( ! openBraces.empty() ) openBraces.pop_back(); ASCIIOP_RETURN(); }
 ","				{ ASCIIOP_RETURN(); }					// also operator
 ":"				{ ASCIIOP_RETURN(); }
 ";"				{ ASCIIOP_RETURN(); }
@@ -454,8 +458,8 @@ zero_t			{ RETURN_VAL(ZERO_T); }					// CFA
 				/* alternative C99 brackets, "<:" & "<:<:" handled by preprocessor */
 "<:"			{ RETURN_VAL('['); }
 ":>"			{ RETURN_VAL(']'); }
-"<%"			{ RETURN_VAL('{'); }
-"%>"			{ RETURN_VAL('}'); }
+"<%"			{ if ( LSP::enabled ) openBraces.push_back( yylloc ); RETURN_VAL('{'); }
+"%>"			{ if ( ! openBraces.empty() ) openBraces.pop_back(); RETURN_VAL('}'); }
 
 				/* operators */
 "!"				{ ASCIIOP_RETURN(); }
@@ -557,6 +561,16 @@ zero_t			{ RETURN_VAL(ZERO_T); }					// CFA
 
 				/* unknown character */
 .				{ yyerror( "unknown character" ); }
+
+				/* end of file: close the braces left open (LSP mode only) */
+<<EOF>>			{
+	if ( ! openBraces.empty() ) {
+		LSP::addDiagnostic( openBraces.back(), "error", "'{' has no matching '}'" );
+		openBraces.pop_back();
+		RETURN_CHAR( '}' );
+	} // if
+	yyterminate();
+}
 
 %%
 
