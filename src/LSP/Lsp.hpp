@@ -35,6 +35,7 @@ struct Options {
 	std::vector<std::string> focus;						// --lsp-focus
 	std::string input;									// the preprocessed input file
 	bool stopAfterResolve = false;						// --lsp-stop-after-resolve
+	std::vector<std::string> skipBodies;				// --lsp-skip-bodies
 };
 
 // True when --lsp was given. Diagnostics then go into the dump instead of stderr.
@@ -73,6 +74,11 @@ void recordTypeParam( const CodeLocation & location, int tyClass );
 void recordResolvedExpr( const ast::Expr * expr );
 // Enum and Pointer Decay turns array and function parameters into pointers; the dump shows them as written.
 void recordParam( const ast::DeclWithType * param );
+
+// Empties the body of each function defined in a file under one of the --lsp-skip-bodies directories that is not a
+// focus file, keeping the body's location. Call before Resolve: the passes before it still see the bodies, and
+// calls need only the declarations.
+void skipBodies( ast::TranslationUnit & unit );
 
 // Builds decls, refs, exprs and scopes from the resolved (or partially
 // resolved) translation unit. Call at most once.

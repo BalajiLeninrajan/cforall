@@ -315,6 +315,9 @@ int main( int argc, char * argv[] ) {
 		} // if
 
 		if ( LSP::enabled ) {
+			// Resolving the bodies of the functions in the library headers is most of the work from here on, and
+			// the dump has nothing from inside them.
+			LSP::skipBodies( transUnit );
 			// Statements that fail to resolve are recorded and left unresolved, so the rest of the unit can still be
 			// dumped. Declarations that fail are left unresolved by the pass itself, which throws at the end.
 			SemanticErrorException resolveErrors;
@@ -456,7 +459,7 @@ int main( int argc, char * argv[] ) {
 
 static const char optstring[] = ":c:ghilLmNnpdP:S:twW:D:";
 
-enum { PreludeDir = 128, LspOut, LspFocus, LspCOut, LspStopAfterResolve };
+enum { PreludeDir = 128, LspOut, LspFocus, LspCOut, LspStopAfterResolve, LspSkipBodies };
 static struct option long_opts[] = {
 	{ "colors", required_argument, nullptr, 'c' },
 	{ "gdb", no_argument, nullptr, 'g' },
@@ -475,6 +478,7 @@ static struct option long_opts[] = {
 	{ "lsp-focus", required_argument, nullptr, LspFocus },
 	{ "lsp-c-out", required_argument, nullptr, LspCOut },
 	{ "lsp-stop-after-resolve", no_argument, nullptr, LspStopAfterResolve },
+	{ "lsp-skip-bodies", required_argument, nullptr, LspSkipBodies },
 	{ "statistics", required_argument, nullptr, 'S' },
 	{ "tree", no_argument, nullptr, 't' },
 	{ "", no_argument, nullptr, 0 },					// -w
@@ -501,6 +505,7 @@ static const char * description[] = {
 	"<file> LSP mode: a file being edited (repeatable)", // no flag
 	"<file> LSP mode: also generate C into file",	// no flag
 	"LSP mode: skip the passes after Resolve and code generation", // no flag
+	"<directory> LSP mode: empty the bodies of functions defined under directory before Resolve (repeatable)", // no flag
 	"<option-list> enable profiling information: counters, heap, time, all, none", // -S
 	"building cfa standard lib",						// -t
 	"",													// -w
@@ -637,6 +642,9 @@ static void parse_cmdline( int argc, char * argv[] ) {
 			break;
 		  case LspStopAfterResolve:
 			LSP::options.stopAfterResolve = true;
+			break;
+		  case LspSkipBodies:
+			LSP::options.skipBodies.push_back( optarg );
 			break;
 		  case 'S':										// enable profiling information, argument comma separated list of names
 			Stats::parse_params( optarg );
