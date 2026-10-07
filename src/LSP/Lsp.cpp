@@ -18,6 +18,7 @@
 
 #include "LSP/Lsp.hpp"
 
+#include <algorithm>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -1597,22 +1598,22 @@ static int innermostScope( const json & scopes, const CodeLocation & loc ) {
 	return best;
 }
 
+bool skipsBody( const CodeLocation & location ) {
+	if ( options.skipBodies.empty() || location.isUnset() ) return false;
+	const std::string & file = location.filename.str();
+	if ( std::find( options.focus.begin(), options.focus.end(), file ) != options.focus.end() ) return false;
+	for ( const std::string & dir : options.skipBodies ) {
+		if ( dir.empty() || file.size() <= dir.size() || file.compare( 0, dir.size(), dir ) != 0 ) continue;
+		if ( dir.back() == '/' || file[dir.size()] == '/' ) return true;
+	} // for
+	return false;
+}
+
 void skipBodies( ast::TranslationUnit & unit ) {
 	if ( options.skipBodies.empty() ) return;
-	std::set<std::string> focus( options.focus.begin(), options.focus.end() );
-	auto skipped = [&]( const CodeLocation & loc ) {
-		if ( loc.isUnset() ) return false;
-		const std::string & file = loc.filename.str();
-		if ( focus.count( file ) ) return false;
-		for ( const std::string & dir : options.skipBodies ) {
-			if ( dir.empty() || file.size() <= dir.size() || file.compare( 0, dir.size(), dir ) != 0 ) continue;
-			if ( dir.back() == '/' || file[dir.size()] == '/' ) return true;
-		} // for
-		return false;
-	};
 	for ( ast::ptr<ast::Decl> & decl : unit.decls ) {
 		auto func = decl.as<ast::FunctionDecl>();
-		if ( ! func || ! func->stmts || ! skipped( func->location ) ) continue;
+		if ( ! func || ! func->stmts || ! skipsBody( func->location ) ) continue;
 		ast::FunctionDecl * mut = ast::mutate( func );
 		mut->stmts = new ast::CompoundStmt( func->stmts->location );
 		decl = mut;

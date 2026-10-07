@@ -28,6 +28,7 @@
 #include "FixGlobalInit.hpp"           // for fixGlobalInit
 #include "GenInit.hpp"                 // for genCtorDtor
 #include "GenPoly/GenPoly.hpp"         // for getFunctionType
+#include "LSP/Lsp.hpp"                 // for skipsBody
 #include "ResolvExpr/Resolver.hpp"     // for findVoidExpression
 #include "ResolvExpr/Unify.hpp"        // for typesCompatible
 #include "SymTab/GenImplicitCall.hpp"  // for genImplicitCall
@@ -1039,6 +1040,8 @@ void InsertDtors::previsit( const ast::BranchStmt * stmt ) {
 bool checkWarnings( const ast::FunctionDecl * funcDecl ) {
 	if ( ! funcDecl ) return false;
 	if ( ! funcDecl->stmts ) return false;
+	// LSP mode emptied the body (LSP::skipBodies), so it would look like it constructs nothing.
+	if ( LSP::skipsBody( funcDecl->location ) ) return false;
 	return CodeGen::isCtorDtor( funcDecl->name ) && ! funcDecl->linkage.is_overrideable;
 }
 

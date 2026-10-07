@@ -75,9 +75,11 @@ void recordResolvedExpr( const ast::Expr * expr );
 // Enum and Pointer Decay turns array and function parameters into pointers; the dump shows them as written.
 void recordParam( const ast::DeclWithType * param );
 
-// Empties the body of each function defined in a file under one of the --lsp-skip-bodies directories that is not a
-// focus file, keeping the body's location. Call before Resolve: the passes before it still see the bodies, and
-// calls need only the declarations.
+// True for a location in a file under one of the --lsp-skip-bodies directories that is not a focus file.
+bool skipsBody( const CodeLocation & location );
+// Empties the body of each function declared where skipsBody is true, keeping the body's location. Call before
+// Resolve: the passes before it still see the bodies, and calls need only the declarations. The passes after it
+// must not check an emptied body against what the function should do (Fix Init's constructor checks).
 void skipBodies( ast::TranslationUnit & unit );
 
 // Builds decls, refs, exprs and scopes from the resolved (or partially
