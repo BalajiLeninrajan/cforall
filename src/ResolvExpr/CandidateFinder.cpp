@@ -9,8 +9,8 @@
 // Author           : Aaron B. Moss
 // Created On       : Wed Jun 5 14:30:00 2019
 // Last Modified By : Peter A. Buhr
-// Last Modified On : Tue Jun 23 11:41:24 2026
-// Update Count     : 7
+// Last Modified On : Fri Sep 25 08:08:43 2026
+// Update Count     : 9
 //
 
 #include "CandidateFinder.hpp"
@@ -54,7 +54,7 @@
 #include "AST/Inspect.hpp"             // for getFunctionName
 #include "LSP/Lsp.hpp"                    // for LSP::enabled
 
-#define PRINT( text ) if ( resolvep ) { text }
+#define PRINT( text ) if ( rstepsp ) { text }
 
 namespace ResolvExpr {
 
