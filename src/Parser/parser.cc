@@ -11639,7 +11639,7 @@ yyreduce:
 
   case 238: /* selection_statement: SWITCH '(' comma_expression ')' '{' error '}'  */
 #line 1453 "Parser/parser.yy"
-                { SemanticError( (yyloc), "synatx error, declarations can only appear before the list of case clauses." ); (yyval.stmt) = nullptr; }
+                { SemanticError( (yyloc), "syntax error, declarations can only appear before the list of case clauses." ); (yyval.stmt) = nullptr; }
 #line 11644 "Parser/parser.cc"
     break;
 
