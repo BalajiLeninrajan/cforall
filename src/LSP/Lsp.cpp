@@ -19,9 +19,11 @@
 #include "LSP/Lsp.hpp"
 
 #include <algorithm>
+#include <climits>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <map>
 #include <set>
@@ -98,13 +100,49 @@ std::map<std::tuple<std::string, int, int>, std::pair<std::string, std::string>>
 // ---------------------------------------------------------------------------
 // The preprocessed input, by (file, line) as named by the line markers.
 
+// One line of the input file that is not a line marker.
+struct Piece {
+	std::string text;
+	const std::string * file;							// as named by the line markers
+	int line;											// as numbered by the line markers
+	int pline;											// in the input file itself (CodeLocation::first_pline)
+};
+
 class SourceText {
-	// A line has several pieces when cpp split it (see load()); columns restart in each piece.
-	std::unordered_map<std::string, std::unordered_map<int, std::vector<std::string>>> lines;
+	// cpp splits a line around the expansion of a macro from a system header (bool from stdbool.h, the pieces of
+	// assert) and continues it after a marker that repeats the line number and switches flag 3 (system header) on or
+	// off. The input lines of one occurrence of a line are its pieces, and columns restart in each. A marker that
+	// repeats a line number without that switch comes from a #line, and a header included twice repeats all of its
+	// line numbers. Each is another copy of the line, and a location's pline says which copy and piece it is in.
+	using Copy = std::vector<const Piece *>;
+	std::deque<Piece> stored;							// in input order; a deque keeps the pointers below valid
+	std::unordered_map<std::string, std::unordered_map<int, std::vector<Copy>>> lines;
+	std::unordered_map<int, const Piece *> pieceAt;		// by input line
 	std::string firstFile;
-	// The input line of each stored piece and back (CodeLocation::first_pline).
-	std::unordered_map<const std::string *, int> plineOf;
-	std::unordered_map<int, const std::string *> pieceAt;
+
+	// The copies of a line, or null.
+	const std::vector<Copy> * copies( const std::string & file, int line ) const {
+		auto f = lines.find( file );
+		if ( f == lines.end() ) return nullptr;
+		auto l = f->second.find( line );
+		return l == f->second.end() || l->second.empty() ? nullptr : &l->second;
+	}
+
+	// The copy of a line with the piece at input line `pline`, else the copy that starts nearest to `pline` in the
+	// input (a neighbouring line of the same copy of a header), else the first.
+	const Copy * copyAt( const std::vector<Copy> & all, int pline ) const {
+		const Copy * best = &all.front();
+		if ( pline <= 0 ) return best;
+		int distance = INT_MAX;
+		for ( const Copy & copy : all ) {
+			for ( const Piece * piece : copy ) {
+				if ( piece->pline == pline ) return &copy;
+			} // for
+			int d = std::abs( copy.front()->pline - pline );
+			if ( d < distance ) best = &copy, distance = d;
+		} // for
+		return best;
+	}
   public:
 	void load( const std::string & path ) {
 		std::ifstream in( path, std::ios::binary );
@@ -113,60 +151,52 @@ class SourceText {
 		buf << in.rdbuf();
 		const std::string text = buf.str();
 
-		// cpp splits a line around some macro expansions (e.g., bool from stdbool.h) and continues it after a marker
-		// repeating the line number. The continuation is another piece of the same line.
 		std::string file;
 		int line = 1;
-		std::vector<std::string> * last = nullptr;		// the last line stored
-		std::string lastFile;
-		int lastLine = -1;
-		bool continues = false;
+		bool inSystem = false;							// the last marker had flag 3
+		// The copy of the last line while that line is code and only markers have followed it, and whether the
+		// marker before it had flag 3. This is how SourceMap in cfa-lsp tells a split line from a repeated one.
+		Copy * last = nullptr;
+		bool lastSystem = false;
 		int depth = 0;
 		int pline = 1;									// the input line of cur
-		// Stored pieces as (line, index) and input line; pieces move while their line grows.
-		std::vector<std::tuple<std::vector<std::string> *, size_t, int>> stored;
-		size_t pos = 0;
-		for ( ; pos < text.size(); pline += 1 ) {
+		for ( size_t pos = 0; pos < text.size(); pline += 1 ) {
 			size_t end = text.find( '\n', pos );
 			if ( end == std::string::npos ) end = text.size();
 			std::string_view cur( text.data() + pos, end - pos );
+			pos = end + 1;
 			std::string markerFile;
 			int markerLine, flags;
 			if ( parseMarker( cur, markerFile, markerLine, flags ) ) {
 				file = markerFile;
 				line = markerLine;
-				continues = file == lastFile && line == lastLine;
+				inSystem = flags & 4;
 				if ( flags & 1 ) depth += 1;			// entering an include
 				if ( ( flags & 2 ) && depth > 0 ) depth -= 1;	// returning from one
-			} else {
-				// The main file: the first code outside any include and outside cpp's <built-in> and <command-line>.
-				if ( firstFile.empty() && depth == 0 && ! file.empty() && file[0] != '<' ) firstFile = file;
-				if ( continues ) {
-					if ( last ) {
-						last->emplace_back( cur );
-						stored.emplace_back( last, last->size() - 1, pline );
-					} // if
-				} else {
-					auto [it, added] = lines[file].emplace( line, std::vector<std::string>{ std::string( cur ) } );
-					last = added ? &it->second : nullptr;	// keeps the first copy of a twice-included line
-					if ( added ) stored.emplace_back( last, 0, pline );
-				} // if
-				continues = false;
-				lastFile = file;
-				lastLine = line;
-				line += 1;
+				continue;
 			} // if
-			pos = end + 1;
-		} // for
-		for ( auto & [owner, index, at] : stored ) {
-			const std::string * piece = &(*owner)[index];
-			plineOf.emplace( piece, at );
-			pieceAt.emplace( at, piece );
+			// The main file: the first code outside any include and outside cpp's <built-in> and <command-line>.
+			if ( firstFile.empty() && depth == 0 && ! file.empty() && file[0] != '<' ) firstFile = file;
+			auto f = lines.try_emplace( file ).first;
+			stored.push_back( { std::string( cur ), &f->first, line, pline } );
+			const Piece * piece = &stored.back();
+			pieceAt.emplace( pline, piece );
+			if ( last && last->back()->file == piece->file && last->back()->line == line && inSystem != lastSystem ) {
+				last->push_back( piece );
+			} else {
+				std::vector<Copy> & all = f->second[line];
+				all.push_back( Copy{ piece } );
+				last = &all.back();
+			} // if
+			// A blank line, or a directive that cpp passed on (#pragma), is not continued.
+			if ( cur.find_first_not_of( " \t\r\f\v" ) == std::string_view::npos || cur[0] == '#' ) last = nullptr;
+			lastSystem = inSystem;
+			line += 1;
 		} // for
 	}
 
 	// Same shape as the lexer's line-directive rule: # N "file" flags... `flags` has bit 0 set for flag 1 (entering
-	// an include) and bit 1 for flag 2 (returning from one).
+	// an include), bit 1 for flag 2 (returning from one) and bit 2 for flag 3 (a system header).
 	static bool parseMarker( std::string_view s, std::string & file, int & line, int & flags ) {
 		size_t i = 0;
 		auto skipWhite = [&]() { while ( i < s.size() && ( s[i] == ' ' || s[i] == '\t' ) ) i += 1; };
@@ -187,38 +217,36 @@ class SourceText {
 		for ( char c : s.substr( close + 1 ) ) {
 			if ( c == '1' ) flags |= 1;
 			else if ( c == '2' ) flags |= 2;
+			else if ( c == '3' ) flags |= 4;
 		} // for
 		return true;
 	}
 
-	const std::vector<std::string> * line( const std::string & file, int line ) const {
-		auto f = lines.find( file );
-		if ( f == lines.end() ) return nullptr;
-		auto l = f->second.find( line );
-		return l == f->second.end() ? nullptr : &l->second;
-	}
-
-	// The pieces of a line, the one at input line `pline` first when it is one of them.
-	std::vector<const std::string *> pieces( const std::string & file, int line, int pline ) const {
-		std::vector<const std::string *> out;
-		const std::vector<std::string> * all = this->line( file, line );
+	// The pieces of the copy of a line that `pline` picks (see copyAt), the one at input line `pline` first when it is
+	// one of them. With `others`, the pieces of the line's other copies follow.
+	std::vector<const Piece *> pieces( const std::string & file, int line, int pline, bool others = true ) const {
+		std::vector<const Piece *> out;
+		const std::vector<Copy> * all = copies( file, line );
 		if ( ! all ) return out;
-		auto at = pieceAt.find( pline );
-		const std::string * first = nullptr;
-		for ( const std::string & s : *all ) {
-			if ( at != pieceAt.end() && at->second == &s ) first = &s;
+		const Copy * copy = copyAt( *all, pline );
+		for ( const Piece * piece : *copy ) {
+			if ( piece->pline == pline ) out.push_back( piece );
 		} // for
-		if ( first ) out.push_back( first );
-		for ( const std::string & s : *all ) {
-			if ( &s != first ) out.push_back( &s );
+		for ( const Piece * piece : *copy ) {
+			if ( piece->pline != pline ) out.push_back( piece );
 		} // for
+		if ( others ) {
+			for ( const Copy & other : *all ) {
+				if ( &other != copy ) out.insert( out.end(), other.begin(), other.end() );
+			} // for
+		} // if
 		return out;
 	}
 
-	// The input line of a piece, or -1.
-	int inputLine( const std::string * piece ) const {
-		auto it = plineOf.find( piece );
-		return it == plineOf.end() ? -1 : it->second;
+	// The input line `pline`, or null for a line marker.
+	const Piece * at( int pline ) const {
+		auto it = pieceAt.find( pline );
+		return it == pieceAt.end() ? nullptr : it->second;
 	}
 
 	bool hasFile( const std::string & file ) const { return lines.count( file ); }
@@ -230,12 +258,13 @@ SourceText source;
 enum class Spelling { Yes, No, Unknown };
 
 // The piece of the line at `loc` whose text at the range spells `name`, ignoring whitespace inside the range (so
-// "?{ }" spells "?{}"). A split line has several pieces; the one at the location's input line is tried first.
-const std::string * spellingPiece( const CodeLocation & loc, const std::string & name ) {
+// "?{ }" spells "?{}"). The piece at the location's input line is tried first, then the rest of its copy of the line,
+// then the other copies.
+const Piece * spellingPiece( const CodeLocation & loc, const std::string & name ) {
 	if ( loc.isUnset() || loc.first_column < 0 || name.empty() ) return nullptr;
 	if ( loc.last_line != loc.first_line || loc.last_column <= loc.first_column ) return nullptr;
-	for ( const std::string * piece : source.pieces( loc.filename.str(), loc.first_line, loc.first_pline ) ) {
-		const std::string & text = *piece;
+	for ( const Piece * piece : source.pieces( loc.filename.str(), loc.first_line, loc.first_pline ) ) {
+		const std::string & text = piece->text;
 		if ( (size_t)loc.last_column > text.size() ) continue;
 		std::string word;
 		for ( char c : text.substr( loc.first_column, loc.last_column - loc.first_column ) ) {
@@ -252,10 +281,11 @@ Spelling spells( const CodeLocation & loc, const std::string & name ) {
 	return Spelling::No;
 }
 
-// Is the name at `loc` preceded by "." or "->", ignoring blanks? The operator can end an earlier piece or line.
+// Is the name at `loc` preceded by "." or "->", ignoring blanks? The operator can end an earlier input line: an
+// earlier piece of a split line, or an earlier line as the parser read it, past line markers and a few blank lines.
 bool followsSelection( const CodeLocation & loc, const std::string & name ) {
-	const std::string * text = spellingPiece( loc, name );
-	if ( ! text ) return false;
+	const Piece * piece = spellingPiece( loc, name );
+	if ( ! piece ) return false;
 	auto before = []( const std::string & s, int end ) -> int {	// index of the last non-blank before end, or -1
 		int i = end - 1;
 		while ( i >= 0 && ( s[i] == ' ' || s[i] == '\t' || s[i] == '\r' ) ) i -= 1;
@@ -264,26 +294,15 @@ bool followsSelection( const CodeLocation & loc, const std::string & name ) {
 	auto selects = []( const std::string & s, int i ) {
 		return s[i] == '.' || ( s[i] == '>' && i > 0 && s[i - 1] == '-' );
 	};
-	int i = before( *text, loc.first_column );
-	if ( i >= 0 ) return selects( *text, i );
-	const std::string file = loc.filename.str();
-	// Earlier pieces of the same line, then earlier lines; a few blank lines at most.
-	const std::vector<std::string> * pieces = source.line( file, loc.first_line );
-	int line = loc.first_line;
-	size_t piece = pieces ? size_t( text - pieces->data() ) : 0;
-	for ( int blank = 0; blank < 8; ) {
-		if ( piece == 0 ) {
-			line -= 1;
-			pieces = line >= 1 ? source.line( file, line ) : nullptr;
-			if ( line < 1 ) return false;
-			if ( ! pieces || pieces->empty() ) {		// blank lines that cpp dropped
-				blank += 1;
-				continue;
-			} // if
-			piece = pieces->size();
+	int i = before( piece->text, loc.first_column );
+	if ( i >= 0 ) return selects( piece->text, i );
+	for ( int at = piece->pline - 1, blank = 0, markers = 0; at >= 1 && blank < 8 && markers < 32; at -= 1 ) {
+		const Piece * earlier = source.at( at );
+		if ( ! earlier ) {
+			markers += 1;
+			continue;
 		} // if
-		piece -= 1;
-		const std::string & s = (*pieces)[piece];
+		const std::string & s = earlier->text;
 		int j = before( s, (int)s.size() );
 		if ( j >= 0 ) return selects( s, j );
 		blank += 1;
@@ -293,18 +312,19 @@ bool followsSelection( const CodeLocation & loc, const std::string & name ) {
 
 // The first non-blank character at or after (line, col), looking a few lines ahead, and the input line of the piece
 // it is in. On a split line the piece at input line `pline` is tried first on the first line, then the first piece
-// long enough.
+// long enough. Each later line is taken from its copy nearest the piece looked at before (see SourceText::copyAt).
 bool nextNonBlank( const std::string & file, int line, int col, int pline, int & atLine, int & atCol, int & atPline,
 		char & c ) {
-	for ( int n = 0; n < 8; n += 1, line += 1, col = 0, pline = -1 ) {
-		for ( const std::string * piece : source.pieces( file, line, pline ) ) {
-			const std::string & text = *piece;
+	for ( int n = 0; n < 8; n += 1, line += 1, col = 0 ) {
+		for ( const Piece * piece : source.pieces( file, line, pline ) ) {
+			const std::string & text = piece->text;
 			if ( col < 0 || (size_t)col > text.size() ) continue;
+			pline = piece->pline;
 			size_t i = text.find_first_not_of( " \t\r", col );
 			if ( i == std::string::npos ) break;		// the rest of the line is blank
 			atLine = line;
 			atCol = (int)i;
-			atPline = source.inputLine( piece );
+			atPline = piece->pline;
 			c = text[i];
 			return true;
 		} // for
@@ -315,17 +335,17 @@ bool nextNonBlank( const std::string & file, int line, int col, int pline, int &
 const std::string opChars = "+-*/%<>=!&|^~\\";
 
 // The one occurrence of the operator `symbol` between (fromLine, fromCol) and (toLine, toCol) that is not part of a
-// longer operator, and the input line of the piece it is in. Within one line, the first piece of a split line with
-// exactly one occurrence wins, trying the piece at input line `fromPline` first; across lines there must be exactly
-// one in all.
+// longer operator, and the input line of the piece it is in. Each line is taken from its copy that has the piece at
+// input line `fromPline`, or is nearest to it. Within one line, the first piece of that copy with exactly one
+// occurrence wins, trying the piece at `fromPline` first; across lines there must be exactly one in all.
 bool findOperator( const std::string & file, int fromLine, int fromCol, int fromPline, int toLine, int toCol,
 		const std::string & symbol, int & atLine, int & atCol, int & atPline ) {
 	if ( fromLine < 1 || fromCol < 0 || toCol < 0 || toLine < fromLine || toLine - fromLine > 8 ) return false;
 	if ( fromLine == toLine && toCol <= fromCol ) return false;
 	int count = 0;
 	for ( int line = fromLine; line <= toLine; line += 1 ) {
-		for ( const std::string * piece : source.pieces( file, line, line == fromLine ? fromPline : -1 ) ) {
-			const std::string & text = *piece;
+		for ( const Piece * piece : source.pieces( file, line, fromPline, false ) ) {
+			const std::string & text = piece->text;
 			size_t from = line == fromLine ? fromCol : 0, to = line == toLine ? toCol : text.size();
 			if ( to > text.size() || from > to ) continue;
 			int found = -1, here = 0;
@@ -339,14 +359,14 @@ bool findOperator( const std::string & file, int fromLine, int fromCol, int from
 				if ( here != 1 ) continue;
 				atLine = line;
 				atCol = found;
-				atPline = source.inputLine( piece );
+				atPline = piece->pline;
 				return true;
 			} // if
 			if ( here > 0 ) {
 				count += here;
 				atLine = line;
 				atCol = found;
-				atPline = source.inputLine( piece );
+				atPline = piece->pline;
 			} // if
 		} // for
 	} // for
@@ -360,13 +380,12 @@ json rangeJson( const CodeLocation & loc, bool withFile ) {
 	int line = loc.first_line, col = std::max( loc.first_column, 0 );
 	int endLine = loc.last_line, endCol = loc.last_column;
 	int pline = loc.first_pline, endPline = loc.last_pline;
-	if ( loc.first_column < 0 ) {						// only the line is known: cover it
-		const std::vector<std::string> * pieces = source.line( loc.filename.str(), line );
+	if ( loc.first_column < 0 ) {						// only the line is known: cover its copy at pline
 		endLine = line;
 		endCol = 0;
-		if ( pieces ) {
-			for ( const std::string & text : *pieces ) endCol = std::max( endCol, (int)text.size() );
-		} // if
+		for ( const Piece * piece : source.pieces( loc.filename.str(), line, pline, false ) ) {
+			endCol = std::max( endCol, (int)piece->text.size() );
+		} // for
 		pline = endPline = -1;							// the columns are not those of one input line
 	} else if ( endLine < line || ( endLine == line && ( pline > 0 && endPline > 0 && endPline != pline
 			? endPline < pline : endCol < col ) ) ) {	// a range can end on a later piece of a split line
@@ -605,11 +624,12 @@ const ast::Decl * typeDeclOf( const ast::Type * type ) {
 // Does a block start at `loc`: a brace, or a statement whose header declaration the translator hoisted into a
 // block of its own? Desugaring makes other blocks at user locations.
 bool blockStart( const CodeLocation & loc ) {
-	const std::vector<std::string> * pieces = source.line( loc.filename.str(), loc.first_line );
-	if ( ! pieces ) return true;
+	std::vector<const Piece *> pieces = source.pieces( loc.filename.str(), loc.first_line, loc.first_pline, false );
+	if ( pieces.empty() ) return true;
 	static const std::set<std::string> keywords = { "for", "if", "while", "switch", "choose", "with", "mutex", "catch",
 		"catchResume", "fixup", "waitfor", "waituntil", "do", "else", "try", "finally" };
-	for ( const std::string & text : *pieces ) {
+	for ( const Piece * piece : pieces ) {
+		const std::string & text = piece->text;
 		if ( (size_t)loc.first_column >= text.size() ) continue;
 		if ( text[loc.first_column] == '{' ) return true;
 		size_t e = loc.first_column;
@@ -1222,8 +1242,8 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards,
 		if ( context != Context::Function || ! d.inFocus( loc ) || loc.first_column < 0 ) return;
 		static const std::set<std::string> keywords = { "goto", "break", "continue", "fallthrough", "fallthru" };
 		auto isId = []( char c ) { return isalnum( (unsigned char)c ) || c == '_'; };
-		for ( const std::string * piece : source.pieces( loc.filename.str(), loc.first_line, loc.first_pline ) ) {
-			const std::string & text = *piece;
+		for ( const Piece * piece : source.pieces( loc.filename.str(), loc.first_line, loc.first_pline, false ) ) {
+			const std::string & text = piece->text;
 			size_t at = loc.first_column, end = at;
 			if ( at >= text.size() ) continue;
 			while ( end < text.size() && isId( text[end] ) ) end += 1;
@@ -1238,7 +1258,7 @@ struct DumpCore final : public ast::WithShortCircuiting, public ast::WithGuards,
 			use.last_line = use.first_line;
 			use.first_column = (int)at;
 			use.last_column = (int)end;
-			use.first_pline = use.last_pline = source.inputLine( piece );
+			use.first_pline = use.last_pline = piece->pline;
 			labelUses.emplace_back( use, name );
 			return;
 		} // for
